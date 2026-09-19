@@ -25,116 +25,102 @@ Error generating stack: `+u.message+`
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.7/dist/umd/supabase.js"></script>
 <script>
 (function(){
-  const KEYS = ["ssa_users","ssa_relationships","ssa_classes","ssa_assignments","ssa_submissions","ssa_questions","ssa_bookings","ssa_notifications","ssa_curriculum"];
-  let supabase=null, syncing=false, pendingPushes={};
-  
-  function getEnv(){
-    if(window.__SSA_ENV__ && window.__SSA_ENV__.SUPABASE_URL) return window.__SSA_ENV__;
-    return { SUPABASE_URL: "", SUPABASE_ANON_KEY: "" };
+  const KEYS = ["ssa_users","ssa_relationships","ssa_classes","ssa_assignments","ssa_submissions","ssa_questions","ssa_bookings","ssa_notifications"];
+  let supabase=null, syncing=false;
+
+  function getEnv(){ return window.__SSA_ENV__ || {}; }
+
+  function mergeArrays(localArr, cloudArr){
+    // Merge by id - union, keep newest if duplicate
+    const map = new Map();
+    (cloudArr||[]).forEach(item=>{ if(item && item.id) map.set(item.id, item); });
+    (localArr||[]).forEach(item=>{
+      if(!item || !item.id) return;
+      const existing = map.get(item.id);
+      if(!existing){
+        map.set(item.id, item);
+      } else {
+        // Keep newer by createdAt if available
+        const eTime = existing.createdAt ? new Date(existing.createdAt).getTime() : 0;
+        const iTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+        if(iTime >= eTime) map.set(item.id, item);
+      }
+    });
+    return Array.from(map.values());
   }
 
   async function init(){
     const env = getEnv();
-    if(!env.SUPABASE_URL || env.SUPABASE_URL.includes("YOUR_PROJECT")){
-      setTimeout(init, 800); return;
-    }
-    if(!window.supabase){ setTimeout(init, 300); return; }
+    if(!env.SUPABASE_URL || !window.supabase){ setTimeout(init, 500); return; }
     try{
-      supabase = window.supabase.createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-      window._supabase = supabase; // expose for debugging
-      console.log("✅ [SSA] Cloud connected");
+      supabase = window.supabase.createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY || env.SUPABASE_SERVICE_KEY);
+      window._supabase = supabase;
+      console.log("✅ [SSA] Cloud ready - merge mode");
       await pull(true);
-      // Push any queued
-      for(const k in pendingPushes){ await push(k, pendingPushes[k]); }
-      pendingPushes={};
-      // Realtime
-      supabase.channel("ssa_final")
-        .on("postgres_changes",{event:"*",schema:"public",table:"ssa_store"}, p=>{
-          if(p.new && KEYS.includes(p.new.key)){
-            console.log("🔄 Realtime", p.new.key);
-            syncing=true;
-            localStorage.setItem(p.new.key, JSON.stringify(p.new.data));
+      supabase.channel("ssa_merge_v2").on("postgres_changes",{event:"*",schema:"public",table:"ssa_store"}, p=>{
+        if(p.new && KEYS.includes(p.new.key)){
+          syncing=true;
+          try{
+            const local = JSON.parse(localStorage.getItem(p.new.key)||"[]");
+            const cloud = p.new.data||[];
+            const merged = mergeArrays(local, cloud);
+            localStorage.setItem(p.new.key, JSON.stringify(merged));
             window.dispatchEvent(new CustomEvent("ssa_realtime"));
-            syncing=false;
-          }
-        }).subscribe();
-      // Aggressive sync intervals
-      setInterval(()=>pull(true), 8000);
-      setInterval(()=>pushAll(), 15000); // force push every 15s to ensure new teachers go to cloud
-      document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) pull(true); });
-      hookTeacher();
-    }catch(e){ console.error("[SSA] init error", e.message); setTimeout(init, 2000); }
+            console.log(`🔄 Merged ${p.new.key}: ${merged.length} items`);
+          }catch(e){ localStorage.setItem(p.new.key, JSON.stringify(p.new.data)); }
+          syncing=false;
+        }
+      }).subscribe();
+      setInterval(()=>pull(true), 10000);
+      setInterval(()=>pushAll(), 20000);
+    }catch(e){ console.error(e.message); }
   }
 
-  async function pull(force=false){
+  async function pull(force){
     if(!supabase) return;
     try{
       const {data,error} = await supabase.from("ssa_store").select("*");
-      if(error){ console.error("[SSA] pull error", error.message); return; }
-      if(!data || data.length===0){
-        console.log("[SSA] Cloud empty, pushing local");
-        await pushAll();
-        return;
-      }
+      if(error){ console.error("pull", error.message); return; }
+      if(!data || data.length===0){ await pushAll(); return; }
       let changed=false;
       syncing=true;
       data.forEach(row=>{
         if(!KEYS.includes(row.key)) return;
         try{
-          const cur = localStorage.getItem(row.key);
-          const inc = JSON.stringify(row.data);
-          if(cur !== inc){
-            // Only update if cloud has MORE data or is newer? For ssa_users, merge by length
-            if(row.key==="ssa_users"){
-              const localUsers = JSON.parse(cur||"[]");
-              const cloudUsers = row.data || [];
-              // Merge teachers by id - keep union
-              const merged = [...cloudUsers];
-              localUsers.forEach(lu=>{
-                if(!merged.find(cu=>cu.id===lu.id)) merged.push(lu);
-              });
-              // Also add local users not in cloud
-              cloudUsers.forEach(cu=>{
-                if(!localUsers.find(lu=>lu.id===cu.id)) {
-                  // will be added via merged
-                }
-              });
-              if(merged.length !== localUsers.length){
-                localStorage.setItem(row.key, JSON.stringify(merged));
-                changed=true;
-                console.log(`⬇️ Merged ${row.key}: local ${localUsers.length} + cloud ${cloudUsers.length} => ${merged.length}`);
-              } else if(cur !== inc){
-                localStorage.setItem(row.key, inc);
-                changed=true;
-              }
-            } else {
-              localStorage.setItem(row.key, inc);
-              changed=true;
-            }
+          const local = JSON.parse(localStorage.getItem(row.key)||"[]");
+          const cloud = row.data||[];
+          const merged = mergeArrays(local, cloud);
+          const curStr = localStorage.getItem(row.key);
+          const mergedStr = JSON.stringify(merged);
+          if(curStr !== mergedStr){
+            localStorage.setItem(row.key, mergedStr);
+            changed=true;
+            console.log(`⬇️ ${row.key}: local ${local.length} + cloud ${cloud.length} => merged ${merged.length}`);
           }
-        }catch(e){ console.warn("pull merge error", e.message); }
+        }catch{}
       });
       syncing=false;
-      if(changed){
-        window.dispatchEvent(new CustomEvent("ssa_realtime"));
-        console.log("🔄 UI refreshed from cloud");
-      }
-    }catch(e){ syncing=false; console.error("pull failed", e.message); }
+      if(changed) window.dispatchEvent(new CustomEvent("ssa_realtime"));
+    }catch(e){ syncing=false; }
   }
 
-  async function push(key, value){
-    if(!supabase){
-      pendingPushes[key]=value;
-      console.log("⏳ Queued push", key, "(supabase not ready)");
-      return;
-    }
-    if(syncing || !KEYS.includes(key)) return;
+  async function push(key,value){
+    if(!supabase || syncing || !KEYS.includes(key)) return;
     try{
       let parsed; try{ parsed=JSON.parse(value); }catch{ parsed=value; }
+      // Before pushing, merge with cloud to avoid overwriting others
+      try{
+        const {data} = await supabase.from("ssa_store").select("data").eq("key", key).single();
+        if(data && data.data){
+          const cloud = data.data||[];
+          const local = parsed||[];
+          parsed = mergeArrays(local, cloud);
+        }
+      }catch{}
       const {error} = await supabase.from("ssa_store").upsert({key, data:parsed, updated_at:new Date().toISOString()}, {onConflict:"key"});
       if(error) throw error;
-      console.log("⬆️ Pushed", key, Array.isArray(parsed) ? `(${parsed.length} items)` : "");
-    }catch(e){ console.error("push error", key, e.message); pendingPushes[key]=value; }
+      console.log(`⬆️ Pushed ${key} (${parsed.length||0} items)`);
+    }catch(e){ console.error("push", key, e.message); }
   }
 
   async function pushAll(){
@@ -145,82 +131,32 @@ Error generating stack: `+u.message+`
     }
   }
 
-  function hookTeacher(){
-    // Watch for new teacher creation by monitoring ssa_users length
-    let lastCount = 0;
-    try{ lastCount = JSON.parse(localStorage.getItem("ssa_users")||"[]").length; }catch{}
-    setInterval(()=>{
-      try{
-        const cur = JSON.parse(localStorage.getItem("ssa_users")||"[]").length;
-        if(cur > lastCount){
-          console.log(`🆕 New user detected: ${lastCount} -> ${cur}, forcing push`);
-          pushAll();
-          lastCount=cur;
-        }
-      }catch{}
-    }, 1000);
-
-    // Hook teacher ID inputs to force pull before search
-    const hookInputs = ()=>{
-      document.querySelectorAll('input[placeholder*="Teacher ID"]').forEach(inp=>{
-        if(inp.dataset.ssaHook) return;
-        inp.dataset.ssaHook=1;
-        inp.addEventListener('focus', ()=>{ console.log("Focus teacher ID - pulling"); pull(true); });
-      });
-    };
-    setInterval(hookInputs, 2000);
-    hookInputs();
-
-    // Watch for "Teacher ID not found" toast and auto-pull
-    const obs = new MutationObserver((muts)=>{
-      for(const mut of muts){
-        for(const node of mut.addedNodes){
-          if(node.textContent && node.textContent.includes("Teacher ID not found")){
-            console.log("⚠️ Teacher not found - pulling cloud and merging");
-            pull(true);
-            setTimeout(()=>pull(true), 1500);
-          }
-        }
-      }
-    });
-    obs.observe(document.body, {childList:true, subtree:true});
-  }
-
   const origSet = localStorage.setItem.bind(localStorage);
   localStorage.setItem = function(k,v){
     origSet(k,v);
     if(!syncing && KEYS.includes(k)){
       clearTimeout(window["_p_"+k]);
-      window["_p_"+k]=setTimeout(()=>push(k,v), 800);
+      window["_p_"+k]=setTimeout(()=>push(k,v), 1000);
     }
   };
 
   window.SSA = {
-    pull: ()=>pull(true),
-    pushAll,
-    checkTeachers: ()=>{
-      const users = JSON.parse(localStorage.getItem("ssa_users")||"[]");
-      const teachers = users.filter(u=>u.role==="teacher");
-      console.table(teachers.map(t=>({name:t.name, code:t.teacherCode, email:t.email, id:t.id})));
-      return teachers;
+    checkTeachers: ()=>{ const u=JSON.parse(localStorage.getItem("ssa_users")||"[]").filter(x=>x.role==="teacher"); console.table(u.map(t=>({name:t.name, code:t.teacherCode, id:t.id}))); return u; },
+    checkAssignments: ()=>{
+      const a=JSON.parse(localStorage.getItem("ssa_assignments")||"[]");
+      console.table(a.map(x=>({title:x.title, teacherId:x.teacherId, id:x.id, created:x.createdAt})));
+      return a;
     },
-    checkCloud: async ()=>{
-      if(!supabase) { console.error("supabase not ready"); return; }
-      const {data,error} = await supabase.from("ssa_store").select("*");
-      if(error) console.error(error);
-      else {
-        console.log("Cloud data:", data);
-        const usersRow = data.find(r=>r.key==="ssa_users");
-        if(usersRow){
-          console.table(usersRow.data.filter(u=>u.role==="teacher").map(t=>({name:t.name, code:t.teacherCode})));
-        }
-      }
-    },
-    forceSync: async ()=>{ await pushAll(); await pull(true); }
+    checkCloud: async ()=>{ const {data}=await supabase.from("ssa_store").select("*"); const r=data.find(x=>x.key==="ssa_assignments"); if(r) console.table(r.data.map(t=>({title:t.title, teacherId:t.teacherId}))); return data; },
+    forceSync: async ()=>{ await pushAll(); await pull(true); },
+    fixAssignments: async ()=>{ // recover if assignments were overwritten
+      await pull(true);
+      await pushAll();
+      console.log("Fixed - assignments merged");
+    }
   };
 
-  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded", init);
-  else init();
+  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();
 </script>
 
