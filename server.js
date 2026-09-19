@@ -4,8 +4,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createClient } from '@supabase/supabase-js';
 import fs from 'fs';
+import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
@@ -15,80 +15,52 @@ const app = express();
 app.use(cors());
 app.use(express.json({limit: '10mb'}));
 
-// Supabase - use SERVICE_KEY on server for secure writes if available, else ANON
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 
-if(!SUPABASE_URL || !SUPABASE_ANON_KEY){
-  console.warn("⚠️  SUPABASE_URL or SUPABASE_ANON_KEY missing - set in Render env vars");
+console.log("=== ENV CHECK ===");
+console.log("URL:", SUPABASE_URL ? "set" : "MISSING");
+console.log("ANON:", SUPABASE_ANON_KEY ? "set" : "MISSING");
+console.log("SERVICE:", SUPABASE_SERVICE_KEY ? "set" : "MISSING");
+
+let supabase = null;
+let supabaseAnon = null;
+try{
+  if(SUPABASE_URL && (SUPABASE_SERVICE_KEY || SUPABASE_ANON_KEY)){
+    supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY || SUPABASE_ANON_KEY);
+    console.log("✅ Supabase backend client OK");
+  }
+  if(SUPABASE_URL && SUPABASE_ANON_KEY){
+    supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    console.log("✅ Supabase anon client OK");
+  }
+}catch(e){
+  console.error("Supabase init error:", e.message);
 }
 
-const supabase = (SUPABASE_URL && SUPABASE_KEY) ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
-const supabaseAnon = (SUPABASE_URL && SUPABASE_ANON_KEY) ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
-
-// Serve frontend with env injection
-app.get('/', (req,res)=>{
-  const filePath = path.join(__dirname, 'public', 'index.html');
-  let html = fs.readFileSync(filePath, 'utf-8');
-  // Inject config safely into window - so frontend has no pasting, auto-connected
-  const inject = `
-    <script>window.__SSA_ENV__ = { SUPABASE_URL: "${SUPABASE_URL||''}", SUPABASE_ANON_KEY: "${SUPABASE_ANON_KEY||''}" };</script>
-  `;
-  html = html.replace('<!-- SSA_ENV_INJECT -->', inject);
-  res.send(html);
-});
-
-app.use(express.static(path.join(__dirname, 'public')));
-
-// API - health check
-app.get('/api/health', async (req,res)=>{
-  let dbOk = false;
-  let count = 0;
-  if(supabase){
-    try{
-      const {data, error} = await supabase.from('ssa_store').select('key', {count:'exact'}).limit(1);
-      if(!error){ dbOk=true; count = data?.length||0; }
-    }catch{}
+function getHtml(){
+  const fp = path.join(__dirname, 'public', 'index.html');
+  if(!fs.existsSync(fp)){
+    console.error("Missing:", fp);
+    return "<h1>public/index.html not found</h1><p>Check GitHub upload - public folder must exist</p>";
   }
-  res.json({ 
-    ok:true, 
-    backend: !!supabase,
-    db_connected: dbOk,
-    supabase_url: SUPABASE_URL ? 'set' : 'missing',
-    timestamp: new Date().toISOString()
-  });
-});
+  let html = fs.readFileSync(fp, 'utf-8');
+  const inject = `<script>window.__SSA_ENV__ = { SUPABASE_URL: "${SUPABASE_URL}", SUPABASE_ANON_KEY: "${SUPABASE_ANON_KEY}" };</script>`;
+  return html.replace('<!-- SSA_ENV_INJECT -->', inject);
+}
 
-// API - get all store (for debugging)
+app.get('/', (req,res)=> res.send(getHtml()));
+app.get('/api/health', (req,res)=> res.json({ok:true, url_set: !!SUPABASE_URL, anon_set: !!SUPABASE_ANON_KEY, time: new Date().toISOString()}));
 app.get('/api/store', async (req,res)=>{
-  if(!supabaseAnon) return res.status(500).json({error:"Supabase not configured"});
+  if(!supabaseAnon) return res.status(500).json({error:"Set env vars"});
   const {data,error} = await supabaseAnon.from('ssa_store').select('*');
   if(error) return res.status(500).json({error:error.message});
   res.json(data);
 });
+app.use(express.static(path.join(__dirname, 'public')));
+app.get('*', (req,res)=> res.send(getHtml()));
 
-// API - proxy write (optional - frontend can also write directly to Supabase)
-app.post('/api/store', async (req,res)=>{
-  if(!supabase) return res.status(500).json({error:"Supabase not configured"});
-  const {key, data} = req.body;
-  if(!key) return res.status(400).json({error:"key required"});
-  const {error} = await supabase.from('ssa_store').upsert({key, data, updated_at: new Date().toISOString()}, {onConflict:"key"});
-  if(error) return res.status(500).json({error:error.message});
-  res.json({ok:true});
-});
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', ()=> console.log(`✅ LIVE on 0.0.0.0:${PORT}`));
 
-// Fallback to index for SPA
-app.get('*', (req,res)=>{
-  const filePath = path.join(__dirname, 'public', 'index.html');
-  let html = fs.readFileSync(filePath, 'utf-8');
-  const inject = `<script>window.__SSA_ENV__ = { SUPABASE_URL: "${SUPABASE_URL||''}", SUPABASE_ANON_KEY: "${SUPABASE_ANON_KEY||''}" };</script>`;
-  html = html.replace('<!-- SSA_ENV_INJECT -->', inject);
-  res.send(html);
-});
-
-const PORT = process.env.PORT || 10000; // Render uses 10000
-app.listen(PORT, ()=> {
-  console.log(`✅ Smart Study Backend live on port ${PORT}`);
-  console.log(`   Supabase: ${SUPABASE_URL ? 'Connected' : 'Not set - set env vars'}`);
-});
