@@ -1,20 +1,12 @@
 {
   "name": "smart-study-app",
-  "version": "1.0.0",
-  "description": "Smart Study App - Frontend is original HTML, Backend Node+Express, DB Supabase - Deploy to Render",
   "type": "module",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
+  "version": "2.0.0",
+  "scripts": { "start": "node server.js" },
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
-    "@supabase/supabase-js": "^2.39.7"
+    "@supabase/supabase-js": "^2.39.0"
   }
 }
