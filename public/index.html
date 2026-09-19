@@ -22,107 +22,163 @@ Error generating stack: `+u.message+`
   
 
 <!-- SSA_ENV_INJECT -->
-<!-- === AUTO BACKEND SYNC - RENDER + SUPABASE - NO UI === -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.7/dist/umd/supabase.js"></script>
 <script>
 (function(){
-  const KEYS_TO_SYNC = ["ssa_users","ssa_relationships","ssa_classes","ssa_assignments","ssa_submissions","ssa_questions","ssa_bookings","ssa_notifications","ssa_curriculum"];
-  let supabase = null;
-  let isSyncingFromCloud = false;
-  let channel = null;
+  const KEYS = ["ssa_users","ssa_relationships","ssa_classes","ssa_assignments","ssa_submissions","ssa_questions","ssa_bookings","ssa_notifications","ssa_curriculum"];
+  let supabase=null, syncing=false, lastPull=0;
+  let pullQueue=false;
 
   function getEnv(){
-    // Try injected env first, then fallback to hardcoded (for local file open)
-    if(window.__SSA_ENV__ && window.__SSA_ENV__.SUPABASE_URL){
-      return window.__SSA_ENV__;
-    }
-    // Fallback - for local testing without Render
+    if(window.__SSA_ENV__ && window.__SSA_ENV__.SUPABASE_URL) return window.__SSA_ENV__;
     return { SUPABASE_URL: "", SUPABASE_ANON_KEY: "" };
   }
 
   function init(){
     const env = getEnv();
-    if(!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY || env.SUPABASE_URL.includes("YOUR_PROJECT")){
-      console.log("[SSA] Waiting for backend env injection...");
-      // Retry in 1s (server might inject after load)
-      setTimeout(init, 1000);
-      return;
+    if(!env.SUPABASE_URL || env.SUPABASE_URL.includes("YOUR_PROJECT")){
+      setTimeout(init, 800); return;
     }
-    if(!window.supabase){ setTimeout(init, 500); return; }
+    if(!window.supabase){ setTimeout(init, 300); return; }
     supabase = window.supabase.createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-    console.log("[SSA] ✅ Connected to Supabase:", env.SUPABASE_URL);
-    setupRealtime();
-    setTimeout(()=>pullFromCloud(), 1000);
-    setInterval(()=>pullFromCloud(true), 30000);
+    console.log("✅ [SSA] Connected to cloud:", env.SUPABASE_URL);
+    // Aggressive initial pull
+    pull(true);
+    setTimeout(()=>pull(true), 2000);
+    setTimeout(()=>pull(true), 5000);
+    // Realtime
+    try{
+      supabase.channel("ssa_live_v2")
+        .on("postgres_changes",{event:"*",schema:"public",table:"ssa_store"}, (p)=>{
+          if(p.new && KEYS.includes(p.new.key)){
+            console.log("🔄 [SSA] Realtime update:", p.new.key);
+            syncing=true;
+            try{
+              localStorage.setItem(p.new.key, JSON.stringify(p.new.data));
+              window.dispatchEvent(new CustomEvent("ssa_realtime",{detail:{type:"realtime",key:p.new.key}}));
+            }catch{}
+            syncing=false;
+          }
+        }).subscribe((s)=>{ console.log("[SSA] Realtime status:", s); });
+    }catch(e){ console.warn("Realtime error", e.message); }
+    // Pull every 10s + on visibility
+    setInterval(()=>pull(true), 10000);
+    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) pull(true); });
+    // Hook teacher ID inputs to force pull before validation
+    hookTeacherInputs();
+    setInterval(hookTeacherInputs, 2000);
   }
 
-  async function pullFromCloud(silent=false){
+  async function pull(force=false){
     if(!supabase) return;
+    if(!force && Date.now()-lastPull < 2000) return; // throttle
+    lastPull=Date.now();
     try{
       const {data,error} = await supabase.from("ssa_store").select("*");
-      if(error) throw error;
-      if(!data || data.length===0){ await pushAllToCloud(); return; }
-      isSyncingFromCloud=true;
+      if(error){ console.warn("[SSA] pull error", error.message); return; }
+      if(!data || data.length===0){ console.log("[SSA] cloud empty, pushing local"); await pushAll(); return; }
       let changed=false;
+      syncing=true;
       data.forEach(row=>{
-        if(!KEYS_TO_SYNC.includes(row.key)) return;
+        if(!KEYS.includes(row.key)) return;
         try{
-          const current = localStorage.getItem(row.key);
-          const incoming = JSON.stringify(row.data);
-          if(current !== incoming){
-            localStorage.setItem(row.key, incoming);
+          const cur = localStorage.getItem(row.key);
+          const inc = JSON.stringify(row.data);
+          if(cur !== inc){
+            localStorage.setItem(row.key, inc);
             changed=true;
+            console.log("⬇️ [SSA] Updated", row.key, "from cloud");
           }
         }catch{}
       });
-      isSyncingFromCloud=false;
+      syncing=false;
       if(changed){
-        window.dispatchEvent(new CustomEvent("ssa_realtime",{detail:{type:"cloud_pull"}}));
-        console.log("[SSA] Pulled and refreshed UI");
+        window.dispatchEvent(new CustomEvent("ssa_realtime"));
+        console.log("🔄 [SSA] UI refreshed");
       }
-    }catch(e){ isSyncingFromCloud=false; console.warn("[SSA] Pull error", e.message); }
+    }catch(e){ syncing=false; console.warn("Pull failed", e.message); }
   }
 
-  async function pushToCloud(key, value){
-    if(!supabase || isSyncingFromCloud || !KEYS_TO_SYNC.includes(key)) return;
+  async function push(key, value){
+    if(!supabase || syncing || !KEYS.includes(key)) return;
     try{
-      let parsed; try{ parsed = JSON.parse(value); }catch{ parsed = value; }
-      await supabase.from("ssa_store").upsert({key, data:parsed, updated_at:new Date().toISOString()}, {onConflict:"key"});
-    }catch(e){ console.warn("[SSA] Push error", e.message); }
+      let parsed; try{ parsed=JSON.parse(value); }catch{ parsed=value; }
+      const {error} = await supabase.from("ssa_store").upsert({key, data:parsed, updated_at:new Date().toISOString()}, {onConflict:"key"});
+      if(error) throw error;
+      console.log("⬆️ [SSA] Pushed", key);
+    }catch(e){ console.warn("[SSA] push error", key, e.message); }
   }
 
-  async function pushAllToCloud(){
+  async function pushAll(){
     if(!supabase) return;
-    for(const k of KEYS_TO_SYNC){
+    for(const k of KEYS){
       const v=localStorage.getItem(k);
-      if(v) await pushToCloud(k,v);
+      if(v) await push(k,v);
     }
   }
 
-  function setupRealtime(){
-    if(!supabase) return;
-    try{
-      channel = supabase.channel("ssa_store_live")
-        .on("postgres_changes",{event:"*",schema:"public",table:"ssa_store"}, (payload)=>{
-          if(payload.new && KEYS_TO_SYNC.includes(payload.new.key)){
-            isSyncingFromCloud=true;
-            try{
-              localStorage.setItem(payload.new.key, JSON.stringify(payload.new.data));
-              window.dispatchEvent(new CustomEvent("ssa_realtime",{detail:{type:"realtime", key:payload.new.key}}));
-            }catch{}
-            isSyncingFromCloud=false;
+  // --- FIX FOR TEACHER ID NOT FOUND ---
+  function hookTeacherInputs(){
+    // Find all inputs with placeholder Teacher ID
+    const inputs = document.querySelectorAll('input[placeholder*="Teacher ID"], input[placeholder*="TCH-"]');
+    inputs.forEach(inp=>{
+      if(inp.dataset.ssaHooked) return;
+      inp.dataset.ssaHooked="1";
+      console.log("[SSA] Hooked teacher ID input");
+      // On focus, force pull latest teachers
+      inp.addEventListener('focus', ()=>{ console.log("[SSA] Focus teacher ID - pulling"); pull(true); });
+      inp.addEventListener('input', ()=>{
+        // If user typed 6+ chars, try pull
+        if(inp.value && inp.value.length>=6){
+          clearTimeout(window._ssaTeacherPull);
+          window._ssaTeacherPull=setTimeout(()=>pull(true), 600);
+        }
+      });
+    });
+
+    // Also hook the Add buttons - retry after pull
+    const buttons = Array.from(document.querySelectorAll('button')).filter(b=> b.textContent && (b.textContent.includes('Add') || b.textContent.toLowerCase().includes('create') || b.textContent.includes('Sign up')));
+    // We patch the error toast - if "Teacher ID not found" appears, auto-pull and retry
+    const observer = new MutationObserver((mutations)=>{
+      for(const mut of mutations){
+        for(const node of mut.addedNodes){
+          if(node.textContent && node.textContent.includes("Teacher ID not found")){
+            console.log("[SSA] Detected Teacher ID not found error - forcing pull");
+            pull(true);
+            setTimeout(()=>pull(true), 1000);
           }
-        })
-        .subscribe();
-    }catch{}
+        }
+      }
+    });
+    observer.observe(document.body, {childList:true, subtree:true});
   }
 
-  const origSetItem = localStorage.setItem.bind(localStorage);
+  // Patch localStorage to auto-push
+  const origSet = localStorage.setItem.bind(localStorage);
   localStorage.setItem = function(k,v){
-    origSetItem(k,v);
-    if(!isSyncingFromCloud && KEYS_TO_SYNC.includes(k)){
-      clearTimeout(window["_ssa_push_"+k]);
-      window["_ssa_push_"+k]=setTimeout(()=>pushToCloud(k,v), 500);
+    origSet(k,v);
+    if(!syncing && KEYS.includes(k)){
+      clearTimeout(window["_p_"+k]);
+      window["_p_"+k]=setTimeout(()=>push(k,v), 500);
+    }
+  };
+
+  // Expose for manual testing in console
+  window.SSA = {
+    pull: ()=>pull(true),
+    pushAll,
+    checkTeachers: ()=>{
+      try{
+        const users = JSON.parse(localStorage.getItem("ssa_users")||"[]");
+        const teachers = users.filter(u=>u.role==="teacher");
+        console.log("Local teachers:", teachers);
+        console.table(teachers.map(t=>({name:t.name, code:t.teacherCode, email:t.email})));
+        return teachers;
+      }catch(e){ console.error(e); }
+    },
+    forceSync: async ()=>{
+      await pull(true);
+      setTimeout(()=>{ window.SSA.checkTeachers(); }, 500);
     }
   };
 
