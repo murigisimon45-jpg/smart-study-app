@@ -26,57 +26,56 @@ Error generating stack: `+u.message+`
 <script>
 (function(){
   const KEYS = ["ssa_users","ssa_relationships","ssa_classes","ssa_assignments","ssa_submissions","ssa_questions","ssa_bookings","ssa_notifications","ssa_curriculum"];
-  let supabase=null, syncing=false, lastPull=0;
-  let pullQueue=false;
-
+  let supabase=null, syncing=false, pendingPushes={};
+  
   function getEnv(){
     if(window.__SSA_ENV__ && window.__SSA_ENV__.SUPABASE_URL) return window.__SSA_ENV__;
     return { SUPABASE_URL: "", SUPABASE_ANON_KEY: "" };
   }
 
-  function init(){
+  async function init(){
     const env = getEnv();
     if(!env.SUPABASE_URL || env.SUPABASE_URL.includes("YOUR_PROJECT")){
       setTimeout(init, 800); return;
     }
     if(!window.supabase){ setTimeout(init, 300); return; }
-    supabase = window.supabase.createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-    console.log("✅ [SSA] Connected to cloud:", env.SUPABASE_URL);
-    // Aggressive initial pull
-    pull(true);
-    setTimeout(()=>pull(true), 2000);
-    setTimeout(()=>pull(true), 5000);
-    // Realtime
     try{
-      supabase.channel("ssa_live_v2")
-        .on("postgres_changes",{event:"*",schema:"public",table:"ssa_store"}, (p)=>{
+      supabase = window.supabase.createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
+      window._supabase = supabase; // expose for debugging
+      console.log("✅ [SSA] Cloud connected");
+      await pull(true);
+      // Push any queued
+      for(const k in pendingPushes){ await push(k, pendingPushes[k]); }
+      pendingPushes={};
+      // Realtime
+      supabase.channel("ssa_final")
+        .on("postgres_changes",{event:"*",schema:"public",table:"ssa_store"}, p=>{
           if(p.new && KEYS.includes(p.new.key)){
-            console.log("🔄 [SSA] Realtime update:", p.new.key);
+            console.log("🔄 Realtime", p.new.key);
             syncing=true;
-            try{
-              localStorage.setItem(p.new.key, JSON.stringify(p.new.data));
-              window.dispatchEvent(new CustomEvent("ssa_realtime",{detail:{type:"realtime",key:p.new.key}}));
-            }catch{}
+            localStorage.setItem(p.new.key, JSON.stringify(p.new.data));
+            window.dispatchEvent(new CustomEvent("ssa_realtime"));
             syncing=false;
           }
-        }).subscribe((s)=>{ console.log("[SSA] Realtime status:", s); });
-    }catch(e){ console.warn("Realtime error", e.message); }
-    // Pull every 10s + on visibility
-    setInterval(()=>pull(true), 10000);
-    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) pull(true); });
-    // Hook teacher ID inputs to force pull before validation
-    hookTeacherInputs();
-    setInterval(hookTeacherInputs, 2000);
+        }).subscribe();
+      // Aggressive sync intervals
+      setInterval(()=>pull(true), 8000);
+      setInterval(()=>pushAll(), 15000); // force push every 15s to ensure new teachers go to cloud
+      document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) pull(true); });
+      hookTeacher();
+    }catch(e){ console.error("[SSA] init error", e.message); setTimeout(init, 2000); }
   }
 
   async function pull(force=false){
     if(!supabase) return;
-    if(!force && Date.now()-lastPull < 2000) return; // throttle
-    lastPull=Date.now();
     try{
       const {data,error} = await supabase.from("ssa_store").select("*");
-      if(error){ console.warn("[SSA] pull error", error.message); return; }
-      if(!data || data.length===0){ console.log("[SSA] cloud empty, pushing local"); await pushAll(); return; }
+      if(error){ console.error("[SSA] pull error", error.message); return; }
+      if(!data || data.length===0){
+        console.log("[SSA] Cloud empty, pushing local");
+        await pushAll();
+        return;
+      }
       let changed=false;
       syncing=true;
       data.forEach(row=>{
@@ -85,28 +84,57 @@ Error generating stack: `+u.message+`
           const cur = localStorage.getItem(row.key);
           const inc = JSON.stringify(row.data);
           if(cur !== inc){
-            localStorage.setItem(row.key, inc);
-            changed=true;
-            console.log("⬇️ [SSA] Updated", row.key, "from cloud");
+            // Only update if cloud has MORE data or is newer? For ssa_users, merge by length
+            if(row.key==="ssa_users"){
+              const localUsers = JSON.parse(cur||"[]");
+              const cloudUsers = row.data || [];
+              // Merge teachers by id - keep union
+              const merged = [...cloudUsers];
+              localUsers.forEach(lu=>{
+                if(!merged.find(cu=>cu.id===lu.id)) merged.push(lu);
+              });
+              // Also add local users not in cloud
+              cloudUsers.forEach(cu=>{
+                if(!localUsers.find(lu=>lu.id===cu.id)) {
+                  // will be added via merged
+                }
+              });
+              if(merged.length !== localUsers.length){
+                localStorage.setItem(row.key, JSON.stringify(merged));
+                changed=true;
+                console.log(`⬇️ Merged ${row.key}: local ${localUsers.length} + cloud ${cloudUsers.length} => ${merged.length}`);
+              } else if(cur !== inc){
+                localStorage.setItem(row.key, inc);
+                changed=true;
+              }
+            } else {
+              localStorage.setItem(row.key, inc);
+              changed=true;
+            }
           }
-        }catch{}
+        }catch(e){ console.warn("pull merge error", e.message); }
       });
       syncing=false;
       if(changed){
         window.dispatchEvent(new CustomEvent("ssa_realtime"));
-        console.log("🔄 [SSA] UI refreshed");
+        console.log("🔄 UI refreshed from cloud");
       }
-    }catch(e){ syncing=false; console.warn("Pull failed", e.message); }
+    }catch(e){ syncing=false; console.error("pull failed", e.message); }
   }
 
   async function push(key, value){
-    if(!supabase || syncing || !KEYS.includes(key)) return;
+    if(!supabase){
+      pendingPushes[key]=value;
+      console.log("⏳ Queued push", key, "(supabase not ready)");
+      return;
+    }
+    if(syncing || !KEYS.includes(key)) return;
     try{
       let parsed; try{ parsed=JSON.parse(value); }catch{ parsed=value; }
       const {error} = await supabase.from("ssa_store").upsert({key, data:parsed, updated_at:new Date().toISOString()}, {onConflict:"key"});
       if(error) throw error;
-      console.log("⬆️ [SSA] Pushed", key);
-    }catch(e){ console.warn("[SSA] push error", key, e.message); }
+      console.log("⬆️ Pushed", key, Array.isArray(parsed) ? `(${parsed.length} items)` : "");
+    }catch(e){ console.error("push error", key, e.message); pendingPushes[key]=value; }
   }
 
   async function pushAll(){
@@ -117,69 +145,78 @@ Error generating stack: `+u.message+`
     }
   }
 
-  // --- FIX FOR TEACHER ID NOT FOUND ---
-  function hookTeacherInputs(){
-    // Find all inputs with placeholder Teacher ID
-    const inputs = document.querySelectorAll('input[placeholder*="Teacher ID"], input[placeholder*="TCH-"]');
-    inputs.forEach(inp=>{
-      if(inp.dataset.ssaHooked) return;
-      inp.dataset.ssaHooked="1";
-      console.log("[SSA] Hooked teacher ID input");
-      // On focus, force pull latest teachers
-      inp.addEventListener('focus', ()=>{ console.log("[SSA] Focus teacher ID - pulling"); pull(true); });
-      inp.addEventListener('input', ()=>{
-        // If user typed 6+ chars, try pull
-        if(inp.value && inp.value.length>=6){
-          clearTimeout(window._ssaTeacherPull);
-          window._ssaTeacherPull=setTimeout(()=>pull(true), 600);
+  function hookTeacher(){
+    // Watch for new teacher creation by monitoring ssa_users length
+    let lastCount = 0;
+    try{ lastCount = JSON.parse(localStorage.getItem("ssa_users")||"[]").length; }catch{}
+    setInterval(()=>{
+      try{
+        const cur = JSON.parse(localStorage.getItem("ssa_users")||"[]").length;
+        if(cur > lastCount){
+          console.log(`🆕 New user detected: ${lastCount} -> ${cur}, forcing push`);
+          pushAll();
+          lastCount=cur;
         }
-      });
-    });
+      }catch{}
+    }, 1000);
 
-    // Also hook the Add buttons - retry after pull
-    const buttons = Array.from(document.querySelectorAll('button')).filter(b=> b.textContent && (b.textContent.includes('Add') || b.textContent.toLowerCase().includes('create') || b.textContent.includes('Sign up')));
-    // We patch the error toast - if "Teacher ID not found" appears, auto-pull and retry
-    const observer = new MutationObserver((mutations)=>{
-      for(const mut of mutations){
+    // Hook teacher ID inputs to force pull before search
+    const hookInputs = ()=>{
+      document.querySelectorAll('input[placeholder*="Teacher ID"]').forEach(inp=>{
+        if(inp.dataset.ssaHook) return;
+        inp.dataset.ssaHook=1;
+        inp.addEventListener('focus', ()=>{ console.log("Focus teacher ID - pulling"); pull(true); });
+      });
+    };
+    setInterval(hookInputs, 2000);
+    hookInputs();
+
+    // Watch for "Teacher ID not found" toast and auto-pull
+    const obs = new MutationObserver((muts)=>{
+      for(const mut of muts){
         for(const node of mut.addedNodes){
           if(node.textContent && node.textContent.includes("Teacher ID not found")){
-            console.log("[SSA] Detected Teacher ID not found error - forcing pull");
+            console.log("⚠️ Teacher not found - pulling cloud and merging");
             pull(true);
-            setTimeout(()=>pull(true), 1000);
+            setTimeout(()=>pull(true), 1500);
           }
         }
       }
     });
-    observer.observe(document.body, {childList:true, subtree:true});
+    obs.observe(document.body, {childList:true, subtree:true});
   }
 
-  // Patch localStorage to auto-push
   const origSet = localStorage.setItem.bind(localStorage);
   localStorage.setItem = function(k,v){
     origSet(k,v);
     if(!syncing && KEYS.includes(k)){
       clearTimeout(window["_p_"+k]);
-      window["_p_"+k]=setTimeout(()=>push(k,v), 500);
+      window["_p_"+k]=setTimeout(()=>push(k,v), 800);
     }
   };
 
-  // Expose for manual testing in console
   window.SSA = {
     pull: ()=>pull(true),
     pushAll,
     checkTeachers: ()=>{
-      try{
-        const users = JSON.parse(localStorage.getItem("ssa_users")||"[]");
-        const teachers = users.filter(u=>u.role==="teacher");
-        console.log("Local teachers:", teachers);
-        console.table(teachers.map(t=>({name:t.name, code:t.teacherCode, email:t.email})));
-        return teachers;
-      }catch(e){ console.error(e); }
+      const users = JSON.parse(localStorage.getItem("ssa_users")||"[]");
+      const teachers = users.filter(u=>u.role==="teacher");
+      console.table(teachers.map(t=>({name:t.name, code:t.teacherCode, email:t.email, id:t.id})));
+      return teachers;
     },
-    forceSync: async ()=>{
-      await pull(true);
-      setTimeout(()=>{ window.SSA.checkTeachers(); }, 500);
-    }
+    checkCloud: async ()=>{
+      if(!supabase) { console.error("supabase not ready"); return; }
+      const {data,error} = await supabase.from("ssa_store").select("*");
+      if(error) console.error(error);
+      else {
+        console.log("Cloud data:", data);
+        const usersRow = data.find(r=>r.key==="ssa_users");
+        if(usersRow){
+          console.table(usersRow.data.filter(u=>u.role==="teacher").map(t=>({name:t.name, code:t.teacherCode})));
+        }
+      }
+    },
+    forceSync: async ()=>{ await pushAll(); await pull(true); }
   };
 
   if(document.readyState==="loading") document.addEventListener("DOMContentLoaded", init);
