@@ -79,5 +79,177 @@ await no("ssa_users",E);
 </script>
   <script>(function(){function m(a){var h=a.getAttribute("href");if(!h)return;try{var u=new URL(h,document.baseURI);if((u.protocol==="http:"||u.protocol==="https:")&&u.host!==location.host){a.target="_blank";a.rel="noopener noreferrer";}}catch(e){}}function s(){document.querySelectorAll("a[href]").forEach(m);}if(document.readyState!=="loading"){s();}else{document.addEventListener("DOMContentLoaded",s);}document.addEventListener("click",function(e){var a=e.target&&e.target.closest&&e.target.closest("a[href]");if(a){m(a);}},true);})();</script>
   
+
+<div id="ssa-school-delete-injected-style" style="display:none"></div>
+<script>
+(function(){
+  function getUsers(){
+    try{
+      let s=localStorage.getItem("ssa_users");
+      if(s) return JSON.parse(s);
+    }catch{}
+    return [];
+  }
+  function getSchools(){
+    let users=getUsers();
+    let map=new Map();
+    users.forEach(u=>{
+      let name=(u.schoolName||"").trim();
+      if(!name) return;
+      if(!map.has(name)) map.set(name,{name:name, teachers:[], students:[], count:0});
+      let entry=map.get(name);
+      if(u.role==="teacher") entry.teachers.push(u);
+      else entry.students.push(u);
+      entry.count++;
+    });
+    return Array.from(map.values()).sort((a,b)=>b.count-a.count);
+  }
+  async function deleteSchool(schoolName){
+    let __school=schoolName.trim();
+    let users=getUsers();
+    let toDelete=users.filter(u=>u.schoolName&&u.schoolName.trim()===__school);
+    if(toDelete.length===0){ alert("No users found for "+__school); return; }
+    if(!confirm(`DELETE SCHOOL "${__school}"?\n\nThis will PERMANENTLY delete:\n- ${toDelete.filter(u=>u.role==="teacher").length} teachers\n- ${toDelete.filter(u=>u.role==="student").length} students\n- All their bookings, questions, relationships\n\nCannot be undone!`)) return;
+    try{
+      // Use existing Supabase helpers if available
+      let Xn=window.Xn||window.__ssa_Xn__||async(k=>{
+        try{
+          let url=(window.__SSA_ENV__||{}).SUPABASE_URL||"";
+          let anon=(window.__SSA_ENV__||{}).SUPABASE_ANON_KEY||"";
+          if(!url||!anon) return [];
+          let r=await fetch(`${url.replace(/\/$/,"")}/rest/v1/ssa_store?select=data&key=eq.${k}`,{headers:{apikey:anon,Authorization:`Bearer ${anon}`}});
+          if(r.ok){ let j=await r.json(); if(j?.[0]?.data) return j[0].data; }
+        }catch(e){}
+        return [];
+      });
+      let no=window.no||window.__ssa_no__||async(k,d=>{
+        try{
+          let url=(window.__SSA_ENV__||{}).SUPABASE_URL||"";
+          let anon=(window.__SSA_ENV__||{}).SUPABASE_ANON_KEY||"";
+          if(!url||!anon) return;
+          await fetch(`${url.replace(/\/$/,"")}/rest/v1/ssa_store`,{method:"POST",headers:{apikey:anon,Authorization:`Bearer ${anon}`,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates"},body:JSON.stringify({key:k,data:d,updated_at:new Date().toISOString()})});
+        }catch(e){}
+      });
+      // Try to get Xn/no from window.supabaseClient if helpers not global
+      if(!window.Xn){
+        try{
+          let c=window.supabaseClient||window.__SSA_SUPABASE_CLIENT__;
+          if(c){
+            Xn=async(k=>{
+              try{ let {data}=await c.from("ssa_store").select("data").eq("key",k).single(); return data?.data||[]; }catch{return [];}
+            });
+            no=async(k,d)=>{ try{ await c.from("ssa_store").upsert({key:k,data:d,updated_at:new Date().toISOString()},{onConflict:"key"}); }catch{} };
+          }
+        }catch{}
+      }
+      let latest=await Xn("ssa_users");
+      let base=Array.isArray(latest)&&latest.length?latest:users;
+      let toDel=base.filter(u=>u.schoolName&&u.schoolName.trim()===__school);
+      let ids=new Set(toDel.map(u=>u.id));
+      let filtered=base.filter(u=>!ids.has(u.id));
+      // Update UI state if React setter available - try to find it
+      try{
+        localStorage.setItem("ssa_users", JSON.stringify(filtered));
+      }catch{}
+      await no("ssa_users", filtered);
+      // tombstone users
+      try{
+        let del=await Xn("ssa_deleted_users");
+        if(!Array.isArray(del)) del=[];
+        toDel.forEach(u=>{ if(!del.find(d=>d.id===u.id)) del.push({id:u.id,deletedAt:new Date().toISOString(),email:u.email,name:u.name,role:u.role,schoolName:u.schoolName,teacherCode:u.teacherCode,studentCode:u.studentCode}); });
+        await no("ssa_deleted_users", del);
+        localStorage.setItem("ssa_deleted_users", JSON.stringify(del));
+      }catch{}
+      // tombstone school
+      try{
+        let delS=await Xn("ssa_deleted_schools");
+        if(!Array.isArray(delS)) delS=[];
+        if(!delS.find(d=>d.name===__school)) delS.push({name:__school,deletedAt:new Date().toISOString(),deletedCount:toDel.length});
+        await no("ssa_deleted_schools", delS);
+        localStorage.setItem("ssa_deleted_schools", JSON.stringify(delS));
+      }catch{}
+      // clean relationships etc
+      try{
+        let rel=await Xn("ssa_relationships");
+        if(Array.isArray(rel)){ let f=rel.filter(r=>!ids.has(r.teacherId)&&!ids.has(r.studentId)&&!ids.has(r.userId)); if(f.length!==rel.length) await no("ssa_relationships", f); }
+      }catch{}
+      try{
+        let b=await Xn("ssa_bookings");
+        if(Array.isArray(b)){ let f=b.filter(r=>!ids.has(r.studentId)&&!ids.has(r.teacherId)); if(f.length!==b.length) await no("ssa_bookings", f); }
+      }catch{}
+      try{
+        let q=await Xn("ssa_questions");
+        if(Array.isArray(q)){ let f=q.filter(r=>!ids.has(r.studentId)&&!ids.has(r.teacherId)); if(f.length!==q.length) await no("ssa_questions", f); }
+      }catch{}
+      // broadcast
+      ids.forEach(id=>{
+        try{ new BroadcastChannel("ssa_sync").postMessage({key:"ssa_users",type:"permanent_delete",id:id,ts:Date.now()}); }catch{}
+        try{ new BroadcastChannel("ssa_logout").postMessage({type:"force_logout",id:id,ts:Date.now()}); }catch{}
+      });
+      try{ new BroadcastChannel("ssa_sync").postMessage({key:"ssa_users",type:"school_deleted",schoolName:__school,deletedIds:[...ids],ts:Date.now()}); }catch{}
+      try{ localStorage.setItem("ssa_sync_event", JSON.stringify({type:"school_deleted",schoolName:__school,deletedIds:[...ids],ts:Date.now()})); }catch{}
+      alert(`School "${__school}" deleted: ${toDel.length} users removed permanently.`);
+      location.reload();
+    }catch(e){
+      console.error(e);
+      alert("Failed to delete school: "+e.message);
+    }
+  }
+  function renderPanel(){
+    let schools=getSchools();
+    let container=document.getElementById("ssa-school-delete-panel");
+    if(!container){
+      // create container and inject into schools tab when it appears
+      let schoolsTab=document.querySelector('[class*="grid"][class*="md:grid-cols-2"]');
+      if(!schoolsTab){
+        // try to find schools header
+        let header=document.body;
+        // create floating panel at top of page as fallback
+        container=document.createElement("div");
+        container.id="ssa-school-delete-panel";
+        container.style.cssText="margin:16px;padding:16px;background:#FFF1F0;border:1px solid #FECDCA;border-radius:16px;font-family:Inter,system-ui;";
+        // inject after first h1 or at top
+        let target=document.querySelector("main")||document.body;
+        target.prepend(container);
+      } else {
+        container=document.createElement("div");
+        container.id="ssa-school-delete-panel";
+        container.style.cssText="margin-bottom:16px;padding:16px;background:#FFF1F0;border:1px solid #FECDCA;border-radius:16px;font-family:Inter,system-ui;grid-column:1/-1;";
+        schoolsTab.parentElement.insertBefore(container, schoolsTab);
+      }
+    }
+    if(schools.length===0){
+      container.innerHTML='<div style="font-size:13px;color:#6B7A99;">No schools found. Schools appear when teachers have schoolName.</div>';
+      return;
+    }
+    let html='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"><div style="font-size:14px;font-weight:600;color:#0F2355;">Delete School • Permanent</div><div style="font-size:11px;color:#6B7A99;">Deletes teachers + students + data</div></div>';
+    html+='<div style="display:grid;gap:8px;">';
+    schools.forEach(s=>{
+      html+=`<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:white;border:1px solid #E8ECF4;border-radius:12px;">
+        <div>
+          <div style="font-size:13px;font-weight:600;color:#0F2355;">${s.name}</div>
+          <div style="font-size:11px;color:#6B7A99;">${s.teachers.length} teachers • ${s.students.length} students • ${s.count} total</div>
+        </div>
+        <button data-school="${s.name.replace(/"/g,'&quot;')}" class="ssa-del-school-btn" style="font-size:11px;font-weight:600;padding:6px 12px;border-radius:9999px;background:#FEF3F2;border:1px solid #FECDCA;color:#B42318;cursor:pointer;">Delete</button>
+      </div>`;
+    });
+    html+='</div>';
+    container.innerHTML=html;
+    container.querySelectorAll(".ssa-del-school-btn").forEach(btn=>{
+      btn.onclick=()=>deleteSchool(btn.getAttribute("data-school"));
+    });
+  }
+  // Try to render every 2 sec and when storage changes
+  setInterval(()=>{
+    if(document.body.innerHTML.includes("Schools •")||document.body.innerHTML.includes("No schools yet")){
+      renderPanel();
+    }
+  },2000);
+  window.addEventListener("storage", renderPanel);
+  document.addEventListener("DOMContentLoaded", ()=>setTimeout(renderPanel, 1500));
+  setTimeout(renderPanel, 2000);
+})();
+</script>
+
 </body>
 </html>
