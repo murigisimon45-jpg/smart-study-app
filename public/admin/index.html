@@ -1,6 +1,30 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<script>
+  window.__SSA_ENV__ = {
+    SUPABASE_URL: "https://ezxdjrowqvpkmbjjajgq.supabase.co",
+    SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV6eGRqcm93cXZwa21iamphamdxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1NjczNDIsImV4cCI6MjEwNTE0MzM0Mn0.I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs",
+    VITE_SUPABASE_URL: "https://ezxdjrowqvpkmbjjajgq.supabase.co",
+    VITE_SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV6eGRqcm93cXZwa21iamphamdxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1NjczNDIsImV4cCI6MjEwNTE0MzM0Mn0.I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs"
+  };
+  window.SUPABASE_URL = "https://ezxdjrowqvpkmbjjajgq.supabase.co";
+  window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV6eGRqcm93cXZwa21iamphamdxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1NjczNDIsImV4cCI6MjEwNTE0MzM0Mn0.I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+  try {
+    const _url = window.__SSA_ENV__.SUPABASE_URL;
+    const _key = window.__SSA_ENV__.SUPABASE_ANON_KEY;
+    if(_url && _key && window.supabase){
+      window.supabaseClient = window.supabase.createClient(_url, _key);
+      window.__SSA_SUPABASE_CLIENT__ = window.supabaseClient;
+      window.__supabase__ = window.supabaseClient;
+      console.log("[Admin] Supabase connected to", _url);
+    }
+  } catch(e){ console.warn("[Admin] Supabase init error", e); }
+</script>
+
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>React Artifact</title>
