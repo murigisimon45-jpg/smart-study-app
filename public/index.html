@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<script>try{let w=localStorage.getItem('ssa_last_wipe'); if(w){let j=JSON.parse(w); let t=j.wiped_at?new Date(j.wiped_at).getTime():j.ts||0; if(Date.now()-t<86400000){['ssa_relationships','ssa_bookings','ssa_questions','ssa_submissions','ssa_question_submissions','ssa_classes','ssa_assignments'].forEach(k=>{try{localStorage.removeItem(k)}catch{}})}} }catch{}</script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1032,6 +1033,434 @@ try{
   };
 
   console.log("[Wipe Guard] Installed");
+})();
+</script>
+
+
+<script>
+// CRITICAL: Run before React to clear old relationships if wipe happened
+(function(){
+  try{
+    let wipeStr = localStorage.getItem("ssa_last_wipe");
+    if(wipeStr){
+      let wipe = JSON.parse(wipeStr);
+      let wipedAt = wipe.wiped_at ? new Date(wipe.wiped_at).getTime() : wipe.ts || 0;
+      if(Date.now() - wipedAt < 24*60*60*1000){
+        console.log("[Early Wipe Guard] Wipe within 24h, clearing local relationship keys BEFORE React loads");
+        ["ssa_relationships","ssa_bookings","ssa_questions","ssa_submissions","ssa_question_submissions","ssa_classes","ssa_assignments"].forEach(k=>{
+          try{ localStorage.removeItem(k); }catch{}
+        });
+        // Also clear if they were set as JSON string
+        try{
+          let rel = localStorage.getItem("ssa_relationships");
+          if(rel){
+            let arr = JSON.parse(rel);
+            if(arr.length>0){
+              localStorage.setItem("ssa_relationships", JSON.stringify([]));
+            }
+          }
+        }catch{}
+      }
+    }
+  }catch(e){ console.warn("Early wipe check failed", e); }
+})();
+</script>
+<style>
+#ssa-pending-overlay {
+  position: fixed; inset: 0; background: #F6F8FC; z-index: 99999; display: none; flex-direction: column; align-items: center; justify-content: center; padding: 24px;
+}
+#ssa-pending-overlay.show { display: flex; }
+#ssa-pending-overlay .card {
+  background: white; border: 1px solid #E8ECF4; border-radius: 20px; padding: 28px; max-width: 420px; width: 100%; text-align: center; box-shadow: 0 20px 60px -20px rgba(15,35,85,0.15);
+}
+#ssa-pending-overlay .spinner {
+  width: 48px; height: 48px; border: 4px solid #E8ECF4; border-top-color: #0F2355; border-radius: 50%; animation: ssa-spin 1s linear infinite; margin: 0 auto 16px;
+}
+@keyframes ssa-spin { to { transform: rotate(360deg); } }
+</style>
+<div id="ssa-pending-overlay">
+  <div class="card">
+    <div class="spinner"></div>
+    <div style="font-size: 18px; font-weight: 700; color: #0F2355;">Waiting for Admin Approval</div>
+    <div style="font-size: 13px; color: #6B7A99; margin-top: 8px;">Your account is pending. You'll be automatically logged in once admin approves you. No need to refresh.</div>
+    <div id="ssa-pending-status" style="font-size: 11px; color: #8B9BB4; margin-top: 16px; background: #F6F8FC; padding: 8px 12px; border-radius: 10px;">Checking status every 2 seconds...</div>
+    <button onclick="localStorage.removeItem('ssa_current_user'); location.reload();" style="margin-top: 16px; height: 36px; padding: 0 16px; border-radius: 10px; background: white; border: 1px solid #E8ECF4; font-size: 12px; font-weight: 600; cursor: pointer;">Logout & Try Again</button>
+  </div>
+</div>
+<script>
+(function(){
+  console.log("[Auto Login] Installing pending auto-login");
+  const SUPABASE_URL = "https://ezxdjrowqvpkmbjjajgq.supabase.co";
+  const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 131 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+  function getSupa(){
+    try{
+      if(window.supabaseClient) return window.supabaseClient;
+      if(window.__SSA_SUPABASE_CLIENT__) return window.__SSA_SUPABASE_CLIENT__;
+      if(window.supabase && SUPABASE_URL && SUPABASE_ANON) return window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+    }catch(e){}
+    return null;
+  }
+  async function fetchFreshUser(email, id){
+    let c=getSupa(); if(!c) return null;
+    try{
+      let {data} = await c.from("ssa_store").select("data").eq("key","ssa_users").single();
+      let users=data?.data||[];
+      let user = users.find(u=>
+        (email && u.email && u.email.toLowerCase()===email.toLowerCase()) ||
+        (id && u.id===id)
+      );
+      return {users, user};
+    }catch(e){ console.warn("fetchFreshUser failed", e); return null; }
+  }
+
+  function showPendingOverlay(){
+    let el=document.getElementById("ssa-pending-overlay");
+    if(el) el.classList.add("show");
+  }
+  function hidePendingOverlay(){
+    let el=document.getElementById("ssa-pending-overlay");
+    if(el) el.classList.remove("show");
+  }
+
+  async function checkAndAutoLogin(){
+    let curStr = localStorage.getItem("ssa_current_user");
+    if(!curStr) { hidePendingOverlay(); return; }
+    try{
+      let cur = JSON.parse(curStr);
+      if(!cur) { hidePendingOverlay(); return; }
+      // If active, hide overlay and allow
+      if(cur.account_status==="active"){ hidePendingOverlay(); return; }
+      // If pending or no status, show overlay and check fresh
+      if(!cur.account_status || cur.account_status==="pending" || cur.account_status==="unauthorized"){
+        showPendingOverlay();
+        let statusEl = document.getElementById("ssa-pending-status");
+        if(statusEl) statusEl.textContent = `Checking status for ${cur.email||cur.name}... last check ${new Date().toLocaleTimeString()}`;
+        let result = await fetchFreshUser(cur.email, cur.id);
+        if(result && result.user){
+          let fresh = result.user;
+          console.log("[Auto Login] Fresh status:", fresh.account_status, "local:", cur.account_status);
+          if(fresh.account_status==="active"){
+            console.log("[Auto Login] User approved! Auto logging in...");
+            if(statusEl) statusEl.textContent = "Approved! Logging you in...";
+            // Update current_user to active
+            let updated = {...cur, account_status:"active", account_status_updated_at: fresh.account_status_updated_at, name: fresh.name||cur.name, role: fresh.role||cur.role};
+            localStorage.setItem("ssa_current_user", JSON.stringify(updated));
+            try{ localStorage.setItem("ssa_users", JSON.stringify(result.users)); }catch{}
+            localStorage.removeItem("ssa_last_auth_error");
+            // Show success and reload to dashboard
+            setTimeout(()=>{
+              hidePendingOverlay();
+              // Force React to re-read current user
+              window.dispatchEvent(new StorageEvent('storage', {key:'ssa_current_user', newValue: JSON.stringify(updated)}));
+              location.reload();
+            }, 1000);
+            return true;
+          } else if(fresh.account_status==="suspended"){
+            if(statusEl) statusEl.textContent = "Your account was suspended by admin.";
+          } else {
+            if(statusEl) statusEl.textContent = `Still pending as of ${new Date().toLocaleTimeString()} - waiting for admin approval...`;
+          }
+        }
+      } else {
+        hidePendingOverlay();
+      }
+    }catch(e){ console.warn("checkAndAutoLogin failed", e); }
+    return false;
+  }
+
+  // Intercept login attempts to always fetch fresh before allowing
+  const originalSetItem = localStorage.setItem;
+  let loginHookInstalled = false;
+  function installLoginHook(){
+    if(loginHookInstalled) return;
+    loginHookInstalled = true;
+    // Watch for ssa_current_user being set
+    let _setItem = localStorage.setItem;
+    localStorage.setItem = function(key, value){
+      if(key==="ssa_current_user"){
+        try{
+          let user = JSON.parse(value);
+          if(user && user.email){
+            // Async fetch fresh and update if active
+            fetchFreshUser(user.email, user.id).then(result=>{
+              if(result && result.user && result.user.account_status==="active" && user.account_status!=="active"){
+                console.log("[Login Hook] Fresh is active, upgrading current_user");
+                let updated = {...user, account_status:"active", account_status_updated_at: result.user.account_status_updated_at};
+                _setItem.call(localStorage, key, JSON.stringify(updated));
+                setTimeout(()=>checkAndAutoLogin(), 500);
+              }
+            });
+          }
+        }catch{}
+      }
+      return _setItem.call(localStorage, key, value);
+    };
+  }
+  installLoginHook();
+
+  // Poll every 2 seconds for pending users
+  setInterval(checkAndAutoLogin, 2000);
+  // Also on focus, visibility
+  window.addEventListener('focus', checkAndAutoLogin);
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) checkAndAutoLogin(); });
+  
+  // Realtime subscription for instant approval
+  (async ()=>{
+    await new Promise(r=>setTimeout(r, 1500));
+    let c=getSupa(); if(!c) return;
+    try{
+      let channel = c.channel("ssa_auto_login").on("postgres_changes", {event:"*", schema:"public", table:"ssa_store"}, async (payload)=>{
+        console.log("[Realtime] ssa_store changed", payload);
+        // If ssa_users changed, check auth
+        if(payload.new && payload.new.key==="ssa_users"){
+          await checkAndAutoLogin();
+        }
+        if(payload.new && payload.new.key==="ssa_last_wipe"){
+          // Wipe happened, clear local
+          ["ssa_relationships","ssa_bookings","ssa_questions","ssa_submissions","ssa_question_submissions","ssa_classes","ssa_assignments"].forEach(k=>{
+            try{ localStorage.removeItem(k); }catch{}
+          });
+        }
+      }).subscribe();
+      console.log("[Realtime] Subscribed to ssa_store changes for auto-login");
+    }catch(e){ console.warn("Realtime sub failed", e); }
+  })();
+
+  // Initial check after 2s
+  setTimeout(checkAndAutoLogin, 2000);
+  setTimeout(checkAndAutoLogin, 4000);
+  console.log("[Auto Login] Installed - pending users will auto login when approved");
+})();
+</script>
+
+
+<script>
+(function(){
+  console.log("[STRONG Auto Login] Installing v2 - intercept removeItem");
+  const SUPABASE_URL = "https://ezxdjrowqvpkmbjjajgq.supabase.co";
+  const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 131 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+  function getSupa(){
+    try{
+      if(window.supabaseClient) return window.supabaseClient;
+      if(window.__SSA_SUPABASE_CLIENT__) return window.__SSA_SUPABASE_CLIENT__;
+      if(window.supabase && SUPABASE_URL && SUPABASE_ANON) return window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+    }catch(e){}
+    return null;
+  }
+  async function fetchFreshUsers(){
+    let c=getSupa(); if(!c) return null;
+    try{
+      let {data} = await c.from("ssa_store").select("data").eq("key","ssa_users").single();
+      return data?.data||[];
+    }catch(e){ return null; }
+  }
+  async function fetchFreshUserByEmail(email, id){
+    let users = await fetchFreshUsers();
+    if(!users) return null;
+    let user = users.find(u=>
+      (email && u.email && u.email.toLowerCase()===email.toLowerCase()) ||
+      (id && u.id===id)
+    );
+    return {users, user};
+  }
+
+  // CRITICAL: Intercept removeItem for ssa_current_user to keep pending email
+  const originalRemoveItem = localStorage.removeItem.bind(localStorage);
+  localStorage.removeItem = function(key){
+    if(key==="ssa_current_user"){
+      try{
+        let curStr = localStorage.getItem("ssa_current_user");
+        if(curStr){
+          let cur = JSON.parse(curStr);
+          if(cur && (cur.account_status==="pending" || !cur.account_status)){
+            console.log("[STRONG] Blocking removal of pending current_user, saving pending email", cur.email);
+            try{ localStorage.setItem("ssa_pending_email", cur.email||""); }catch{}
+            try{ localStorage.setItem("ssa_pending_id", cur.id||""); }catch{}
+            try{ localStorage.setItem("ssa_pending_name", cur.name||""); }catch{}
+            // Don't actually remove - keep it for auto-login
+            // Instead show overlay
+            let overlay = document.getElementById("ssa-pending-overlay");
+            if(overlay) overlay.classList.add("show");
+            return; // BLOCK removal
+          }
+        }
+      }catch(e){ console.warn("removeItem intercept failed", e); }
+    }
+    return originalRemoveItem(key);
+  };
+
+  // Also intercept setItem for ssa_last_auth_error to show overlay
+  const originalSetItem = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = function(key, value){
+    if(key==="ssa_last_auth_error"){
+      try{
+        let err = JSON.parse(value);
+        if(err && (err.type==="pending" || (err.msg&&err.msg.toLowerCase().includes("pending")))){
+          console.log("[STRONG] Pending error detected, saving pending email");
+          // Try to get current user email from somewhere
+          let curStr = localStorage.getItem("ssa_current_user");
+          if(curStr){
+            try{ let cur=JSON.parse(curStr); localStorage.setItem("ssa_pending_email", cur.email||""); }catch{}
+          }
+          // Also try from error
+          if(err.email) originalSetItem.call(this, "ssa_pending_email", err.email);
+          setTimeout(()=>{ 
+            let ov=document.getElementById("ssa-pending-overlay"); 
+            if(ov) ov.classList.add("show"); 
+          }, 500);
+        }
+      }catch{}
+    }
+    return originalSetItem.call(this, key, value);
+  };
+
+  function showPendingOverlay(email){
+    let el=document.getElementById("ssa-pending-overlay");
+    if(el){
+      el.classList.add("show");
+      let statusEl=document.getElementById("ssa-pending-status");
+      if(statusEl && email) statusEl.textContent = `Waiting for admin to approve ${email} - auto login when approved...`;
+    }
+  }
+  function hidePendingOverlay(){
+    let el=document.getElementById("ssa-pending-overlay");
+    if(el) el.classList.remove("show");
+  }
+
+  async function attemptAutoLogin(){
+    let pendingEmail = localStorage.getItem("ssa_pending_email");
+    let pendingId = localStorage.getItem("ssa_pending_id");
+    let curStr = localStorage.getItem("ssa_current_user");
+    let emailToCheck = null;
+    let idToCheck = null;
+    if(curStr){
+      try{ let cur=JSON.parse(curStr); emailToCheck=cur.email; idToCheck=cur.id; }catch{}
+    }
+    if(!emailToCheck) emailToCheck=pendingEmail;
+    if(!idToCheck) idToCheck=pendingId;
+    if(!emailToCheck && !idToCheck){
+      // Check last auth error for email
+      try{
+        let errStr=localStorage.getItem("ssa_last_auth_error");
+        if(errStr){ let err=JSON.parse(errStr); emailToCheck=err.email||errStr.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i)?.[0]; }
+      }catch{}
+    }
+    if(!emailToCheck && !idToCheck) return false;
+
+    console.log("[STRONG] Checking approval for", emailToCheck, idToCheck);
+    let result = await fetchFreshUserByEmail(emailToCheck, idToCheck);
+    if(!result || !result.user){
+      let statusEl=document.getElementById("ssa-pending-status");
+      if(statusEl) statusEl.textContent = `Still pending for ${emailToCheck||'your account'} - last check ${new Date().toLocaleTimeString()} - waiting...`;
+      return false;
+    }
+    let fresh = result.user;
+    console.log("[STRONG] Fresh status:", fresh.account_status, "for", emailToCheck);
+    if(fresh.account_status==="active"){
+      console.log("[STRONG] APPROVED! Auto logging in", emailToCheck);
+      let statusEl=document.getElementById("ssa-pending-status");
+      if(statusEl) statusEl.textContent = `Approved! Logging in as ${fresh.name||emailToCheck}...`;
+      // Create current_user as active
+      let newCurrent = {
+        id: fresh.id,
+        email: fresh.email,
+        name: fresh.name,
+        role: fresh.role,
+        grade: fresh.grade,
+        schoolName: fresh.schoolName,
+        teacherCode: fresh.teacherCode,
+        studentCode: fresh.studentCode,
+        account_status: "active",
+        account_status_updated_at: fresh.account_status_updated_at,
+        createdAt: fresh.createdAt
+      };
+      localStorage.setItem("ssa_current_user", JSON.stringify(newCurrent));
+      try{ localStorage.setItem("ssa_users", JSON.stringify(result.users)); }catch{}
+      localStorage.removeItem("ssa_last_auth_error");
+      localStorage.removeItem("ssa_pending_email");
+      localStorage.removeItem("ssa_pending_id");
+      // Hide overlay and reload to dashboard
+      setTimeout(()=>{
+        hidePendingOverlay();
+        // Try to trigger React navigation
+        window.dispatchEvent(new StorageEvent('storage', {key:'ssa_current_user', newValue: JSON.stringify(newCurrent)}));
+        location.reload();
+      }, 1200);
+      return true;
+    } else if(fresh.account_status==="pending"){
+      showPendingOverlay(emailToCheck);
+      let statusEl=document.getElementById("ssa-pending-status");
+      if(statusEl) statusEl.textContent = `Still pending as of ${new Date().toLocaleTimeString()} - auto refresh when admin approves...`;
+    }
+    return false;
+  }
+
+  // Check on load if we have pending email even without current_user
+  (async ()=>{
+    await new Promise(r=>setTimeout(r, 1000));
+    let pendingEmail = localStorage.getItem("ssa_pending_email");
+    let curStr = localStorage.getItem("ssa_current_user");
+    if(pendingEmail || (curStr && (()=>{ try{ let c=JSON.parse(curStr); return c.account_status==="pending"||!c.account_status; }catch{return false;} })())){
+      console.log("[STRONG] Pending detected on load, showing overlay and starting auto-check");
+      showPendingOverlay(pendingEmail);
+      attemptAutoLogin();
+    }
+    // Also check if last auth error is pending
+    try{
+      let errStr=localStorage.getItem("ssa_last_auth_error");
+      if(errStr){
+        let err=JSON.parse(errStr);
+        if(err && Date.now()-err.ts < 60000){
+          showPendingOverlay(err.email||pendingEmail);
+          attemptAutoLogin();
+        }
+      }
+    }catch{}
+  })();
+
+  // Poll every 2 seconds - this is the auto refresh
+  setInterval(attemptAutoLogin, 2000);
+  window.addEventListener('focus', attemptAutoLogin);
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) attemptAutoLogin(); });
+
+  // Realtime - when admin authorizes, Supabase fires and we auto login instantly
+  (async ()=>{
+    await new Promise(r=>setTimeout(r, 1500));
+    let c=getSupa(); if(!c) return;
+    try{
+      let channel = c.channel("ssa_auto_login_v2").on("postgres_changes", {event:"*", schema:"public", table:"ssa_store"}, async (payload)=>{
+        if(payload.new && (payload.new.key==="ssa_users" || payload.new.key==="ssa_last_auth_change")){
+          console.log("[Realtime V2] ssa_users changed, attempting auto login");
+          await attemptAutoLogin();
+        }
+      }).subscribe();
+      console.log("[Realtime V2] Subscribed for auto-login");
+    }catch(e){ console.warn("Realtime v2 failed", e); }
+  })();
+
+  // Add manual check button to login page
+  setTimeout(()=>{
+    let loginBtn = Array.from(document.querySelectorAll('button')).find(b=>b.innerText.toLowerCase().includes('login')||b.innerText.toLowerCase().includes('sign in'));
+    if(loginBtn && loginBtn.parentElement){
+      if(!document.getElementById('ssa-check-approval-btn')){
+        let checkBtn = document.createElement('button');
+        checkBtn.id='ssa-check-approval-btn';
+        checkBtn.textContent='Check if Admin Approved Me';
+        checkBtn.style.cssText='margin-top:12px; width:100%; height:40px; border-radius:10px; background:#0F2355; color:white; border:none; font-weight:600; cursor:pointer;';
+        checkBtn.onclick=async ()=>{
+          checkBtn.textContent='Checking...';
+          let ok = await attemptAutoLogin();
+          if(!ok){
+            checkBtn.textContent='Still Pending - Waiting for Admin';
+            setTimeout(()=>{ checkBtn.textContent='Check if Admin Approved Me'; }, 3000);
+          }
+        };
+        loginBtn.parentElement.appendChild(checkBtn);
+      }
+    }
+  }, 2000);
+
+  console.log("[STRONG Auto Login V2] Installed - blocks logout, polls every 2s, realtime");
 })();
 </script>
 
