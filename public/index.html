@@ -1464,5 +1464,99 @@ try{
 })();
 </script>
 
+
+<style>
+/* Hide debug UI from main app - for production */
+.ssa-debug-bar, .debug-bar, [class*="debug"] { display: none !important; }
+</style>
+<script>
+(function(){
+  console.log("[Hide Debug] Installing debug hider");
+  function hideDebugElements(){
+    try{
+      // Find and hide elements containing debug text
+      let all = document.querySelectorAll('div, section, header, footer');
+      all.forEach(el=>{
+        let text = el.innerText || '';
+        // Hide blue cloud bar
+        if(text.includes('Cloud: connected') && text.includes('Relationships:')){
+          // Check if this is the bar itself (not parent of many things)
+          if(text.length < 200){
+            el.style.display='none';
+            el.style.visibility='hidden';
+            el.style.height='0';
+            el.style.overflow='hidden';
+            console.log("[Hide Debug] Hid cloud status bar");
+          } else {
+            // Find child that is the bar
+            el.querySelectorAll('div').forEach(child=>{
+              let ct = child.innerText||'';
+              if(ct.includes('Cloud: connected') && ct.length < 200){
+                child.style.display='none';
+              }
+            });
+          }
+        }
+        // Hide Debug - How to test box
+        if(text.includes('Debug — How to test on phone') || text.includes('Debug -- How to test')){
+          // Find the card containing it
+          let card = el.closest('[class*="card"]') || el;
+          // If this element itself contains debug header, hide it
+          if(el.innerText.includes('Debug — How to test')){
+            // Hide the whole debug card
+            let debugCard = el;
+            // Try to find parent that is the debug container
+            while(debugCard && debugCard.parentElement){
+              if(debugCard.innerText.includes('Teacher ID: TCH-') && debugCard.innerText.includes('SSA.check')){
+                debugCard.style.display='none';
+                console.log("[Hide Debug] Hid debug test box");
+                break;
+              }
+              debugCard = debugCard.parentElement;
+              if(debugCard && debugCard.tagName==='BODY') break;
+            }
+            // Also hide current element if it's the header
+            if(el.tagName!=='BODY' && el.innerText.startsWith('Debug')){
+              el.style.display='none';
+            }
+          }
+        }
+        // Hide any element with Teacher ID debug
+        if(text.includes('Teacher ID: TCH-') && text.includes('SSA.checkStudents')){
+          el.style.display='none';
+        }
+      });
+      
+      // Also hide by specific selectors - the blue bar
+      document.querySelectorAll('*').forEach(el=>{
+        if(el.textContent && el.textContent.includes('Cloud: connected') && el.children.length===0){
+          let parent = el.parentElement;
+          if(parent){
+            // Hide parent if it looks like status bar
+            if(parent.innerText.includes('Relationships:') && parent.innerText.includes('Students:')){
+              parent.style.display='none';
+            }
+          }
+        }
+      });
+    }catch(e){ console.warn("hideDebug failed", e); }
+  }
+
+  // Run on load and periodically
+  setTimeout(hideDebugElements, 500);
+  setTimeout(hideDebugElements, 1500);
+  setTimeout(hideDebugElements, 3000);
+  setInterval(hideDebugElements, 2000);
+  
+  // Also observe DOM changes
+  try{
+    let observer = new MutationObserver(()=>{ hideDebugElements(); });
+    observer.observe(document.body, {childList:true, subtree:true});
+  }catch{}
+
+  console.log("[Hide Debug] Installed");
+})();
+</script>
+
 </body>
 </html>
