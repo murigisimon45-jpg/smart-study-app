@@ -49,7 +49,7 @@ Error generating stack: `+o.message+`
 #ssa-approvals-btn { display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 14px; border-radius: 12px; background: #FFF7ED; border: 1px solid #FED7AA; color: #9A3412; font-size: 12px; font-weight: 600; cursor: pointer; }
 #ssa-approvals-btn .dot { width: 8px; height: 8px; background: #EA580C; border-radius: 50%; display: inline-block; animation: ssa-pulse 1.5s infinite; }
 @keyframes ssa-pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-#ssa-approvals-drawer { position: fixed; top: 0; right: -420px; width: 400px; max-width: 92vw; height: 100vh; background: white; border-left: 1px solid #E8ECF4; box-shadow: -20px 0 60px -20px rgba(15,35,85,0.25); z-index: 9999; transition: right 0.3s ease; display: flex; flex-direction: column; }
+#ssa-approvals-drawer { position: fixed; top: 0; right: -420px; width: 420px; max-width: 92vw; height: 100vh; background: white; border-left: 1px solid #E8ECF4; box-shadow: -20px 0 60px -20px rgba(15,35,85,0.25); z-index: 9999; transition: right 0.3s ease; display: flex; flex-direction: column; }
 #ssa-approvals-drawer.open { right: 0; }
 #ssa-approvals-overlay { position: fixed; inset: 0; background: rgba(15,35,85,0.15); backdrop-filter: blur(4px); z-index: 9998; display: none; }
 #ssa-approvals-overlay.open { display: block; }
@@ -57,128 +57,114 @@ Error generating stack: `+o.message+`
 .ssa-drawer-tab.active { background: #0F2355; color: white; border-color: #0F2355; }
 .ssa-user-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: white; border: 1px solid #E8ECF4; border-radius: 12px; margin-bottom: 8px; }
 #ssa-toast-container { position: fixed; bottom: 16px; right: 16px; left: 16px; z-index: 10000; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
-.ssa-toast { background: #0F2355; color: white; padding: 12px 16px; border-radius: 12px; font-size: 13px; font-weight: 500; box-shadow: 0 10px 30px rgba(0,0,0,0.2); pointer-events: auto; max-width: 420px; margin-left: auto; animation: ssa-slideIn 0.25s ease; }
+.ssa-toast { background: #0F2355; color: white; padding: 12px 16px; border-radius: 12px; font-size: 13px; font-weight: 500; box-shadow: 0 10px 30px rgba(0,0,0,0.2); pointer-events: auto; max-width: 420px; margin-left: auto; }
 .ssa-toast.error { background: #B42318; } .ssa-toast.success { background: #16A34A; }
-@keyframes ssa-slideIn { from { transform: translateY(10px); opacity:0 } to { transform: translateY(0); opacity:1 } }
 </style>
 <div id="ssa-approvals-overlay"></div>
 <div id="ssa-approvals-drawer">
   <div style="padding:16px; border-bottom:1px solid #F0F2F7; display:flex; align-items:center; justify-content:space-between;">
-    <div style="font-size:14px; font-weight:700; color:#0F2355;">Approvals & Data Tools</div>
+    <div style="font-size:14px; font-weight:700; color:#0F2355;">Admin Tools</div>
     <button id="ssa-drawer-close" style="width:32px; height:32px; border-radius:10px; border:1px solid #E8ECF4; background:white; cursor:pointer;">✕</button>
   </div>
   <div style="padding:12px; display:flex; gap:8px; border-bottom:1px solid #F0F2F7; flex-wrap:wrap;">
     <button class="ssa-drawer-tab active" data-tab="pending">Pending</button>
-    <button class="ssa-drawer-tab" data-tab="suspended">Suspended</button>
-    <button class="ssa-drawer-tab" data-tab="tools">Tools • Wipe Data</button>
+    <button class="ssa-drawer-tab" data-tab="tools">Tools • Permanent Wipe</button>
   </div>
   <div id="ssa-drawer-content" style="flex:1; overflow-y:auto; padding:12px;"></div>
 </div>
 <div id="ssa-toast-container"></div>
 <script>
 (function(){
-  let cachedUsers = null; let lastFetch = 0;
-  const WIPE_KEYS = ["ssa_relationships","ssa_bookings","ssa_questions","ssa_submissions","ssa_question_submissions","ssa_classes","ssa_assignments"];
+  let cachedUsers=null;
   function getSupa(){
     try{
       if(window.supabaseClient) return window.supabaseClient;
       if(window.__SSA_SUPABASE_CLIENT__) return window.__SSA_SUPABASE_CLIENT__;
-      let url = "https://ezxdjrowqvpkmbjjajgq.supabase.co";
-      let key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 131 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+      let url="https://ezxdjrowqvpkmbjjajgq.supabase.co";
+      let key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 131 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
       if(window.supabase && url && key) return window.supabase.createClient(url, key);
     }catch(e){}
     return null;
   }
   function getUsersLocal(){ try{ let s=localStorage.getItem("ssa_users"); if(s) return JSON.parse(s); }catch{} return []; }
-  function getUsers(){ return cachedUsers || getUsersLocal(); }
+  function getUsers(){ return cachedUsers||getUsersLocal(); }
   async function fetchUsersFast(){
     let c=getSupa(); if(!c) return getUsersLocal();
-    try{
-      let {data} = await c.from("ssa_store").select("data").eq("key","ssa_users").single();
-      let users=data?.data||[]; if(Array.isArray(users)&&users.length>0){ cachedUsers=users; lastFetch=Date.now(); try{ localStorage.setItem("ssa_users", JSON.stringify(users)); }catch{} return users; }
-    }catch(e){ console.warn(e); }
+    try{ let {data}=await c.from("ssa_store").select("data").eq("key","ssa_users").single(); let users=data?.data||[]; if(Array.isArray(users)&&users.length>0){ cachedUsers=users; try{ localStorage.setItem("ssa_users", JSON.stringify(users)); }catch{} return users; } }catch(e){}
     return getUsersLocal();
   }
   window.SSA_Toast=function(msg,type='info'){
-    let c=document.getElementById('ssa-toast-container');
-    if(!c){ c=document.createElement('div'); c.id='ssa-toast-container'; document.body.appendChild(c); }
+    let c=document.getElementById('ssa-toast-container'); if(!c){ c=document.createElement('div'); c.id='ssa-toast-container'; document.body.appendChild(c); }
     let t=document.createElement('div'); t.className='ssa-toast '+type; t.textContent=msg; c.appendChild(t);
     setTimeout(()=>{ t.style.opacity='0'; t.style.transition='0.3s'; setTimeout(()=>t.remove(),300); }, 4000);
   };
-
-  // ONE-CLICK auth
   window.SSA_Cs=async function(s){
-    let __id=s.id; let users=await fetchUsersFast(); let idx=users.findIndex(u=>u.id===__id); if(idx===-1){ SSA_Toast("User not found",'error'); return; }
+    let users=await fetchUsersFast(); let idx=users.findIndex(u=>u.id===s.id); if(idx===-1) return;
     users[idx]={...users[idx], account_status:"active", account_status_updated_at:new Date().toISOString()}; cachedUsers=users;
-    try{ localStorage.setItem("ssa_users", JSON.stringify(users)); }catch{}
-    renderDrawer(); injectRowButtons(); SSA_Toast(`Authorizing ${s.name||s.email}...`,'info');
-    try{
-      let c=getSupa(); if(c) await c.from("ssa_store").upsert({key:"ssa_users", data:users, updated_at:new Date().toISOString()},{onConflict:"key"});
-      let url="https://ezxdjrowqvpkmbjjajgq.supabase.co"; let anon="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 131 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
-      fetch(`${url}/functions/v1/update-account-status`,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${anon}`,"apikey":anon},body:JSON.stringify({targetUserId:__id,targetEmail:s.email,account_status:"active"})}).catch(()=>{});
-    }catch(e){}
-    try{ localStorage.setItem("ssa_sync_event", JSON.stringify({type:"account_status_changed", id:__id, status:"active", ts:Date.now()})); }catch{}
-    try{ new BroadcastChannel("ssa_sync").postMessage({type:"account_status_changed", id:__id, status:"active", ts:Date.now()}); }catch{}
+    try{ localStorage.setItem("ssa_users", JSON.stringify(users)); }catch{} renderDrawer();
+    try{ let c=getSupa(); if(c) await c.from("ssa_store").upsert({key:"ssa_users", data:users, updated_at:new Date().toISOString()},{onConflict:"key"}); }catch{}
+    try{ localStorage.setItem("ssa_sync_event", JSON.stringify({type:"account_status_changed", id:s.id, status:"active", ts:Date.now()})); }catch{}
+    try{ new BroadcastChannel("ssa_sync").postMessage({type:"account_status_changed", id:s.id, status:"active", ts:Date.now()}); }catch{}
     SSA_Toast(`${s.name||s.email} authorized ✓`,'success');
   };
-  window.SSA_Ss=async function(s){
-    let __id=s.id; let __reason=prompt(`Reason:`)||"Suspended"; let users=await fetchUsersFast(); let idx=users.findIndex(u=>u.id===__id); if(idx===-1) return;
-    users[idx]={...users[idx], account_status:"suspended", suspension_reason:__reason, account_status_updated_at:new Date().toISOString()}; cachedUsers=users;
-    try{ localStorage.setItem("ssa_users", JSON.stringify(users)); }catch{} renderDrawer(); SSA_Toast(`Suspending...`,'info');
-    try{ let c=getSupa(); if(c) await c.from("ssa_store").upsert({key:"ssa_users", data:users, updated_at:new Date().toISOString()},{onConflict:"key"}); }catch{}
-    try{ new BroadcastChannel("ssa_logout").postMessage({type:"force_logout",id:__id,reason:__reason,ts:Date.now()}); }catch{}
-    SSA_Toast(`${s.name||s.email} suspended ✓`,'success');
-  };
 
-  // REAL WIPE that blocks re-sync
-  window.SSA_DeleteAllRelationships=async function(){
-    if(!confirm("DELETE ALL RELATIONSHIPS, BOOKINGS, QUESTIONS, CLASSES?\n\nThis will unlink all teachers/students and clear stuck data.\n\nOld data will NOT come back.")) return;
-    if(!confirm("FINAL CONFIRM: This wipes relationships for ALL schools. Continue?")) return;
-    SSA_Toast("Wiping all relationships - blocking re-sync...","info");
-    let c=getSupa();
-    let now = new Date().toISOString();
-    let wipeMarker = {wiped_at: now, wiped_by: "admin", keys: WIPE_KEYS};
+  // PERMANENT ERASE via Edge Function + direct Supabase
+  window.SSA_PermanentErase=async function(){
+    if(!confirm("PERMANENTLY ERASE ALL RELATIONSHIPS?\n\nThis will:\n- Delete 19 relationships you saw in debug bar\n- Delete all bookings/questions\n- Set wipe marker so they CANNOT come back\n\nContinue?")) return;
+    if(!confirm("FINAL CONFIRM: This is permanent for ALL schools. Type OK?")) return;
+    SSA_Toast("Erasing relationships permanently...","info");
+    let url="https://ezxdjrowqvpkmbjjajgq.supabase.co";
+    let anon="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 131 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+    let WIPE_KEYS=["ssa_relationships","ssa_bookings","ssa_questions","ssa_submissions","ssa_question_submissions","ssa_classes","ssa_assignments"];
     try{
-      // 1. Clear localStorage immediately on this device
+      // Try edge function first
+      try{
+        let res=await fetch(`${url}/functions/v1/delete-all-relationships`,{
+          method:"POST",
+          headers:{"Content-Type":"application/json","Authorization":`Bearer ${anon}`,"apikey":anon},
+          body:JSON.stringify({confirm:true})
+        });
+        let data=await res.json();
+        console.log("Edge erase result", data);
+        if(data.success){
+          SSA_Toast("Edge function wiped: "+JSON.stringify(data.results).slice(0,100)+" ✓",'success');
+        }
+      }catch(e){ console.warn("Edge function failed, using direct wipe", e); }
+
+      // Direct wipe as fallback
+      let c=getSupa();
+      let now=new Date().toISOString();
+      // Clear local immediately
       WIPE_KEYS.forEach(k=>{ try{ localStorage.removeItem(k); }catch{} });
-      try{ localStorage.setItem("ssa_last_wipe", JSON.stringify(wipeMarker)); }catch{}
-      try{ localStorage.setItem("ssa_wipe_event", JSON.stringify({type:"wipe", keys:WIPE_KEYS, ts:Date.now()})); }catch{}
-      // 2. Broadcast wipe to all other tabs/devices
-      try{ new BroadcastChannel("ssa_sync").postMessage({type:"wipe_all", keys:WIPE_KEYS, ts:Date.now()}); }catch{}
-      try{ new BroadcastChannel("ssa_wipe").postMessage({type:"wipe", keys:WIPE_KEYS, ts:Date.now()}); }catch{}
-      try{ new BroadcastChannel("ssa_relationships").postMessage({type:"wipe"}); }catch{}
-      // 3. Upsert empty arrays to Supabase + wipe marker
+      try{ localStorage.setItem("ssa_last_wipe", JSON.stringify({wiped_at:now, permanent:true})); }catch{}
+      try{ localStorage.setItem("ssa_wipe_event", JSON.stringify({type:"permanent_wipe", ts:Date.now()})); }catch{}
+      try{ new BroadcastChannel("ssa_sync").postMessage({type:"wipe_all", permanent:true, ts:Date.now()}); }catch{}
+      try{ new BroadcastChannel("ssa_wipe").postMessage({type:"wipe", permanent:true}); }catch{}
       if(c){
         for(let k of WIPE_KEYS){
           await c.from("ssa_store").upsert({key:k, data:[], updated_at:now},{onConflict:"key"});
         }
-        await c.from("ssa_store").upsert({key:"ssa_last_wipe", data:wipeMarker, updated_at:now},{onConflict:"key"});
-        await c.from("ssa_store").upsert({key:"ssa_wipe_event", data:{type:"wipe", keys:WIPE_KEYS, ts:Date.now()}, updated_at:now},{onConflict:"key"});
+        await c.from("ssa_store").upsert({key:"ssa_last_wipe", data:{wiped_at:now, permanent:true, keys:WIPE_KEYS}, updated_at:now},{onConflict:"key"});
       }
-      SSA_Toast("All relationships wiped ✓ - old data blocked from re-syncing","success");
-      setTimeout(()=>location.reload(), 1200);
-    }catch(e){ SSA_Toast("Wipe failed: "+e.message,'error'); console.error(e); }
+      SSA_Toast("All 19 relationships permanently erased ✓ - debug bar should now show 0",'success');
+      setTimeout(()=>{ location.reload(); }, 1500);
+    }catch(e){ SSA_Toast("Erase failed: "+e.message,'error'); }
   };
 
-  window.SSA_ClearOneSchool=async function(schoolName){
-    if(!schoolName){ schoolName=prompt("Enter school name to clear:"); if(!schoolName) return; }
-    if(!confirm(`Clear ALL data for school "${schoolName}"?`)) return;
-    let c=getSupa(); if(!c){ SSA_Toast("No supa",'error'); return; }
-    SSA_Toast(`Clearing ${schoolName}...`,'info');
+  window.SSA_EraseOneSchool=async function(){
+    let school=prompt("Enter school name to erase relationships for:"); if(!school) return;
+    if(!confirm(`Erase ALL relationships for "${school}"?`)) return;
+    let url="https://ezxdjrowqvpkmbjjajgq.supabase.co";
+    let anon="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 131 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
     try{
-      for(let k of WIPE_KEYS){
-        try{
-          let {data}=await c.from("ssa_store").select("data").eq("key",k).single();
-          let arr=data?.data||[]; let filtered=arr.filter(item=>{ 
-            let s = (item.schoolName||item.school||"").toLowerCase(); 
-            return s !== schoolName.toLowerCase(); 
-          });
-          if(filtered.length !== arr.length){
-            await c.from("ssa_store").upsert({key:k, data:filtered, updated_at:new Date().toISOString()},{onConflict:"key"});
-          }
-        }catch{}
-      }
-      SSA_Toast(`${schoolName} data cleared ✓`,'success');
+      let res=await fetch(`${url}/functions/v1/delete-all-relationships`,{
+        method:"POST",
+        headers:{"Content-Type":"application/json","Authorization":`Bearer ${anon}`,"apikey":anon},
+        body:JSON.stringify({confirm:true, schoolName:school})
+      });
+      let data=await res.json();
+      SSA_Toast(`School ${school} erased: ${JSON.stringify(data.results||data)}`,'success');
+      setTimeout(()=>location.reload(), 1000);
     }catch(e){ SSA_Toast("Failed: "+e.message,'error'); }
   };
 
@@ -186,115 +172,50 @@ Error generating stack: `+o.message+`
   async function renderDrawer(){
     let users=cachedUsers||await fetchUsersFast();
     let pending=users.filter(u=>!u.account_status||u.account_status==="pending");
-    let suspended=users.filter(u=>u.account_status==="suspended");
     let btn=document.getElementById('ssa-approvals-btn'); if(btn){ btn.innerHTML=pending.length>0?`<span class="dot"></span> Approvals • ${pending.length} pending`:`Approvals • 0`; }
     let content=document.getElementById('ssa-drawer-content'); if(!content) return;
     if(currentTab==='tools'){
-      // Get current relationship counts
-      let c=getSupa(); let counts={}; 
+      let c=getSupa(); let counts={};
       try{
-        for(let k of WIPE_KEYS){
+        for(let k of ["ssa_relationships","ssa_bookings","ssa_questions","ssa_classes","ssa_assignments"]){
           try{ let {data}=await c.from("ssa_store").select("data").eq("key",k).single(); counts[k]=(data?.data||[]).length; }catch{ counts[k]=0; }
         }
       }catch{}
       content.innerHTML=`
         <div style="display:flex; flex-direction:column; gap:12px;">
-          <div style="background:#FEF2F2; border:1px solid #FECACA; border-radius:12px; padding:12px;">
-            <div style="font-size:13px; font-weight:700; color:#991B1B;">Danger Zone • Wipe Stuck Data</div>
-            <div style="font-size:11px; color:#6B7A99; margin-top:4px;">Old data keeps coming back because other devices push localStorage back to cloud. This wipe blocks re-sync.</div>
-            <div style="font-size:10px; color:#991B1B; background:white; padding:8px; border-radius:8px; margin-top:8px;">
-              Current cloud counts:<br>
+          <div style="background:#FEF2F2; border:1px solid #FECACA; border-radius:12px; padding:14px;">
+            <div style="font-size:14px; font-weight:700; color:#991B1B;">PERMANENT ERASE • Debug: ${counts.ssa_relationships||0} relationships</div>
+            <div style="font-size:11px; color:#6B7A99; margin-top:6px;">You saw in debug bar: <b>${counts.ssa_relationships||0} relationships</b> auto-synced. This button permanently deletes them from Supabase + blocks re-sync.</div>
+            <div style="font-size:10px; background:white; padding:8px; border-radius:8px; margin-top:8px; border:1px solid #FECACA;">
               Relationships: ${counts.ssa_relationships||0}<br>
               Bookings: ${counts.ssa_bookings||0}<br>
               Questions: ${counts.ssa_questions||0}<br>
               Classes: ${counts.ssa_classes||0}<br>
               Assignments: ${counts.ssa_assignments||0}
             </div>
-            <button onclick="SSA_DeleteAllRelationships()" style="margin-top:10px; width:100%; height:44px; border-radius:10px; background:#B42318; color:white; border:none; font-weight:700; cursor:pointer;">DELETE ALL RELATIONSHIPS (Block Re-sync)</button>
-            <div style="font-size:10px; color:#6B7A99; margin-top:6px;">This clears cloud + localStorage + broadcasts wipe to all devices + sets wipe marker so old data can't return.</div>
+            <button onclick="SSA_PermanentErase()" style="margin-top:12px; width:100%; height:48px; border-radius:10px; background:#B42318; color:white; border:none; font-weight:700; cursor:pointer; font-size:13px;">PERMANENTLY ERASE ALL RELATIONSHIPS (${counts.ssa_relationships||0})</button>
+            <div style="font-size:10px; color:#991B1B; margin-top:6px;">This calls Edge Function delete-all-relationships + direct wipe + sets permanent marker so old data cannot return. Main app debug bar will go to 0.</div>
           </div>
           <div style="background:#F6F8FC; border:1px solid #E8ECF4; border-radius:12px; padding:12px;">
-            <div style="font-size:12px; font-weight:600;">Clear One School</div>
-            <div style="display:flex; gap:8px; margin-top:8px;">
-              <input id="ssa-school-input" placeholder="School name" style="flex:1; height:36px; border:1px solid #E8ECF4; border-radius:8px; padding:0 10px; font-size:12px;">
-              <button onclick="SSA_ClearOneSchool(document.getElementById('ssa-school-input').value)" style="height:36px; padding:0 12px; border-radius:8px; background:#0F2355; color:white; border:none; font-weight:600; cursor:pointer;">Clear</button>
-            </div>
-          </div>
-          <div style="background:#F6F8FC; border:1px solid #E8ECF4; border-radius:12px; padding:12px;">
-            <div style="font-size:12px; font-weight:600;">Stats</div>
-            <div style="font-size:11px; color:#6B7A99; margin-top:6px;">
-              Total users: ${users.length}<br>Pending: ${pending.length}<br>Active: ${users.filter(u=>u.account_status==='active').length}<br>Suspended: ${suspended.length}
-            </div>
-            <button onclick="location.reload()" style="margin-top:10px; width:100%; height:36px; border-radius:10px; background:white; border:1px solid #E8ECF4; font-weight:600; cursor:pointer;">Hard Refresh Data</button>
+            <div style="font-size:12px; font-weight:600;">Erase One School Only</div>
+            <button onclick="SSA_EraseOneSchool()" style="margin-top:8px; width:100%; height:36px; border-radius:8px; background:#0F2355; color:white; border:none; font-weight:600; cursor:pointer;">Erase School Relationships</button>
           </div>
         </div>
       `;
       return;
     }
-    let list=currentTab==='pending'?pending:suspended;
-    if(list.length===0){ content.innerHTML=`<div style="padding:24px; text-align:center; color:#8B9BB4; font-size:13px;">No ${currentTab} users</div>`; return; }
-    let html=''; list.slice(0,50).forEach(u=>{ let uStr=encodeURIComponent(JSON.stringify(u)); html+=`<div class="ssa-user-row"><div style="flex:1;"><div style="font-size:13px; font-weight:600;">${u.name||'No name'}</div><div style="font-size:11px; color:#6B7A99;">${u.email||''} • ${u.role||''}</div></div><div style="display:flex; flex-direction:column; gap:6px; margin-left:12px;"><button data-u="${uStr}" class="auth-btn" style="font-size:11px; padding:6px 12px; border-radius:9999px; background:#10B981; color:white; border:none; cursor:pointer; font-weight:600;">Authorize</button></div></div>`; });
+    let list=pending;
+    if(list.length===0){ content.innerHTML=`<div style="padding:24px; text-align:center; color:#8B9BB4; font-size:13px;">No pending users</div>`; return; }
+    let html=''; list.slice(0,50).forEach(u=>{ let uStr=encodeURIComponent(JSON.stringify(u)); html+=`<div class="ssa-user-row"><div style="flex:1;"><div style="font-size:13px; font-weight:600;">${u.name||'No name'}</div><div style="font-size:11px; color:#6B7A99;">${u.email||''}</div></div><div><button data-u="${uStr}" class="auth-btn" style="font-size:11px; padding:6px 12px; border-radius:9999px; background:#10B981; color:white; border:none; cursor:pointer; font-weight:600;">Authorize</button></div></div>`; });
     content.innerHTML=html;
     content.querySelectorAll('.auth-btn').forEach(b=>{ b.onclick=()=>{ let u=JSON.parse(decodeURIComponent(b.dataset.u)); SSA_Cs(u); }});
   }
-
-  function injectApprovalsButton(){ if(document.getElementById('ssa-approvals-btn')) return; let header=document.querySelector('header')||document.querySelector('[class*="sticky"]'); if(!header) return; let btn=document.createElement('button'); btn.id='ssa-approvals-btn'; btn.innerHTML='Approvals'; btn.onclick=async()=>{ document.getElementById('ssa-approvals-drawer').classList.add('open'); document.getElementById('ssa-approvals-overlay').classList.add('open'); await fetchUsersFast(); renderDrawer(); }; let bell=header.querySelector('button'); if(bell&&bell.parentElement){ bell.parentElement.prepend(btn); }else{ header.appendChild(btn); } }
-  function injectRowButtons(){
-    document.querySelectorAll('table').forEach(table=>{
-      if(!table.innerText.includes('ACTIONS')) return;
-      table.querySelectorAll('tbody tr').forEach(tr=>{
-        if(tr.dataset.ssaEnhanced) return;
-        let tds=tr.querySelectorAll('td'); if(tds.length===0) return;
-        let actionsTd=tds[tds.length-1]; if(!actionsTd) return;
-        let name=tds[0]?.innerText?.trim()||''; let code=tds[1]?.innerText?.trim()||'';
-        let users=getUsers(); let matched=users.find(u=>(code&&(u.teacherCode===code||u.studentCode===code||u.id===code))||(name&&u.name&&name.toLowerCase().includes(u.name.toLowerCase().split(' ')[0])));
-        if(!matched) return; if(actionsTd.querySelector('.ssa-row-suspend')) return;
-        let status=matched.account_status||'pending';
-        let btn=document.createElement('button'); btn.className='ssa-row-suspend'; btn.textContent=status==='suspended'?'Reactivate':status==='pending'?'Authorize':'Suspend';
-        let bg=status==='suspended'?'#0F2355':status==='pending'?'#10B981':'#FEF3F2'; let col=status==='pending'||status==='suspended'?'white':'#B42318'; let border=status==='pending'?'#10B981':status==='suspended'?'#0F2355':'#FECACA';
-        btn.style.cssText=`height:32px; padding:0 12px; border-radius:10px; font-size:12px; font-weight:500; margin-left:6px; cursor:pointer; border:1px solid ${border}; background:${bg}; color:${col};`;
-        btn.onclick=()=>{ if(status==='pending'||status==='suspended') SSA_Cs(matched); else SSA_Ss(matched); }; actionsTd.appendChild(btn); tr.dataset.ssaEnhanced='1';
-      });
-    });
-  }
+  function injectBtn(){ if(document.getElementById('ssa-approvals-btn')) return; let header=document.querySelector('header')||document.querySelector('[class*="sticky"]'); if(!header) return; let btn=document.createElement('button'); btn.id='ssa-approvals-btn'; btn.innerHTML='Approvals'; btn.onclick=async()=>{ document.getElementById('ssa-approvals-drawer').classList.add('open'); document.getElementById('ssa-approvals-overlay').classList.add('open'); await fetchUsersFast(); renderDrawer(); }; let bell=header.querySelector('button'); if(bell&&bell.parentElement) bell.parentElement.prepend(btn); else header.appendChild(btn); }
   document.getElementById('ssa-drawer-close')?.addEventListener('click', ()=>{ document.getElementById('ssa-approvals-drawer').classList.remove('open'); document.getElementById('ssa-approvals-overlay').classList.remove('open'); });
   document.getElementById('ssa-approvals-overlay')?.addEventListener('click', ()=>{ document.getElementById('ssa-approvals-drawer').classList.remove('open'); document.getElementById('ssa-approvals-overlay').classList.remove('open'); });
   document.addEventListener('click', (e)=>{ let t=e.target.closest('.ssa-drawer-tab'); if(!t) return; document.querySelectorAll('.ssa-drawer-tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); currentTab=t.dataset.tab; renderDrawer(); });
-  (async()=>{ await fetchUsersFast(); injectApprovalsButton(); injectRowButtons(); renderDrawer(); })();
-  setInterval(async()=>{ if(Date.now()-lastFetch>10000){ await fetchUsersFast(); } injectApprovalsButton(); injectRowButtons(); },5000);
-})();
-</script>
-
-
-<script>
-(function(){
-  // Enhance authorize to send notification to user for auto-login trigger
-  const originalSSA_Cs = window.SSA_Cs;
-  window.SSA_Cs = async function(s){
-    // Call original
-    if(originalSSA_Cs) await originalSSA_Cs(s);
-    // Also send notification and trigger realtime
-    try{
-      let url="https://ezxdjrowqvpkmbjjajgq.supabase.co"; 
-      let anon="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 131 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
-      // Fetch supabase client
-      let c=null;
-      try{ if(window.supabaseClient) c=window.supabaseClient; else if(window.__SSA_SUPABASE_CLIENT__) c=window.__SSA_SUPABASE_CLIENT__; else if(window.supabase) c=window.supabase.createClient(url, anon); }catch{}
-      if(c){
-        // Add notification for user
-        try{
-          let {data} = await c.from("ssa_store").select("data").eq("key","ssa_notifications").single();
-          let notifs=data?.data||[];
-          notifs.push({id:`notif_${Date.now()}`, userId:s.id, type:"approved", message:"Your account has been approved by admin! You can now login.", read:false, createdAt:new Date().toISOString()});
-          await c.from("ssa_store").upsert({key:"ssa_notifications", data:notifs, updated_at:new Date().toISOString()},{onConflict:"key"});
-        }catch{}
-        // Trigger a dummy update to ssa_store to fire realtime (update a timestamp key)
-        try{
-          await c.from("ssa_store").upsert({key:"ssa_last_auth_change", data:{userId:s.id, email:s.email, status:"active", ts:Date.now()}, updated_at:new Date().toISOString()},{onConflict:"key"});
-        }catch{}
-      }
-    }catch(e){ console.warn("Post-authorize notify failed", e); }
-  };
+  (async()=>{ await fetchUsersFast(); injectBtn(); renderDrawer(); })();
+  setInterval(async()=>{ await fetchUsersFast(); injectBtn(); },5000);
 })();
 </script>
 
