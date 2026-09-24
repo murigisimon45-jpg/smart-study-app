@@ -774,5 +774,266 @@ try{
 })();
 </script>
 
+
+<script>
+(function(){
+  console.log("[Fix] Installing instant auth check - fetch fresh status on login");
+  const SUPABASE_URL = "https://ezxdjrowqvpkmbjjajgq.supabase.co";
+  const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV6eGRqcm93cXZwa21iamJqYWpncSIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNzQ2MzM0ODcxMCwiZXhwIjoyMDYxOTIwODcxMH0.I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+  
+  function getSupa(){
+    try{
+      if(window.supabaseClient) return window.supabaseClient;
+      if(window.__SSA_SUPABASE_CLIENT__) return window.__SSA_SUPABASE_CLIENT__;
+      if(window.supabase && SUPABASE_URL && SUPABASE_ANON) return window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+    }catch(e){}
+    return null;
+  }
+
+  async function fetchFreshUsers(){
+    let c = getSupa();
+    if(!c) return null;
+    try{
+      let {data, error} = await c.from("ssa_store").select("data").eq("key","ssa_users").single();
+      if(error) throw error;
+      let users = data?.data || [];
+      if(Array.isArray(users) && users.length>0){
+        try{ localStorage.setItem("ssa_users", JSON.stringify(users)); }catch{}
+        return users;
+      }
+    }catch(e){ console.warn("[Fix] fetchFreshUsers failed", e); }
+    return null;
+  }
+
+  // Hook into login - intercept all login attempts
+  const originalSetItem = localStorage.setItem;
+  // We will add a global function that login code can call
+  window.__SSA_fetchFreshOnLogin = async function(email, userId){
+    let fresh = await fetchFreshUsers();
+    if(!fresh) return null;
+    let user = fresh.find(u=> 
+      (email && u.email && u.email.toLowerCase()===email.toLowerCase()) ||
+      (userId && u.id===userId)
+    );
+    return {users: fresh, user: user};
+  };
+
+  // Patch continuousAuthCheck to always use fresh data for pending users
+  let authCheckPatched = false;
+  function patchAuthChecks(){
+    if(authCheckPatched) return;
+    // Find and override getUsers to fetch fresh when checking auth
+    if(window.__SSA_ENV__){
+      window.__SSA_ENV__.FAST_AUTH = true;
+    }
+  }
+
+  // On login form submit, fetch fresh first
+  document.addEventListener('submit', async (e)=>{
+    let form = e.target;
+    if(!form || !form.innerHTML) return;
+    // Check if this is login form by looking for email/password fields
+    let emailInput = form.querySelector('input[type="email"]') || form.querySelector('input[placeholder*="email" i]');
+    if(!emailInput) return;
+    // Don't block submit, but pre-fetch fresh users in background for next check
+    let email = emailInput.value;
+    if(email){
+      console.log("[Fix] Login attempt for", email, "- prefetching fresh status");
+      await fetchFreshUsers();
+    }
+  }, true);
+
+  // When ssa_current_user is set (login), immediately verify with fresh data
+  let lastCurrentUser = null;
+  setInterval(async ()=>{
+    try{
+      let curStr = localStorage.getItem("ssa_current_user");
+      if(!curStr) { lastCurrentUser = null; return; }
+      if(curStr === lastCurrentUser) return;
+      lastCurrentUser = curStr;
+      let cur = JSON.parse(curStr);
+      if(!cur || !cur.email) return;
+      console.log("[Fix] New login detected for", cur.email, "- fetching fresh status");
+      let result = await window.__SSA_fetchFreshOnLogin(cur.email, cur.id);
+      if(!result || !result.user){
+        console.warn("[Fix] User not found in fresh data");
+        return;
+      }
+      let freshUser = result.user;
+      let status = freshUser.account_status || "pending";
+      console.log("[Fix] Fresh status for", cur.email, "is", status);
+      if(status === "active"){
+        // Update current_user to active immediately
+        let updatedCur = {...cur, account_status:"active", account_status_updated_at: freshUser.account_status_updated_at};
+        localStorage.setItem("ssa_current_user", JSON.stringify(updatedCur));
+        console.log("[Fix] Updated current_user to active - login allowed");
+        // Clear any pending error
+        localStorage.removeItem("ssa_last_auth_error");
+      } else if(status === "pending"){
+        // Keep pending - will show pending message
+        console.log("[Fix] Still pending");
+      }
+    }catch(e){ console.warn("[Fix] current_user check failed", e); }
+  }, 1000);
+
+  // Also listen for BroadcastChannel auth changes and update current_user instantly
+  try{
+    let bc = new BroadcastChannel("ssa_sync");
+    bc.addEventListener('message', async (e)=>{
+      if(e.data && e.data.type==="account_status_changed"){
+        console.log("[Fix] Auth status changed broadcast:", e.data);
+        let fresh = await fetchFreshUsers();
+        if(!fresh) return;
+        let curStr = localStorage.getItem("ssa_current_user");
+        if(!curStr) return;
+        try{
+          let cur = JSON.parse(curStr);
+          if(cur.id===e.data.id || (e.data.email && cur.email===e.data.email)){
+            let freshUser = fresh.find(u=>u.id===cur.id);
+            if(freshUser && freshUser.account_status==="active"){
+              let updated = {...cur, account_status:"active", account_status_updated_at: freshUser.account_status_updated_at};
+              localStorage.setItem("ssa_current_user", JSON.stringify(updated));
+              console.log("[Fix] Broadcast - updated current_user to active");
+              // If on login page showing pending, reload to allow login
+              if(window.location.href.includes("login") || document.body.innerText.includes("pending")){
+                setTimeout(()=>location.reload(), 800);
+              }
+            }
+          }
+        }catch{}
+      }
+    });
+  }catch{}
+
+  // On page load, if user is pending but fresh is active, auto-fix
+  (async ()=>{
+    await new Promise(r=>setTimeout(r, 1500));
+    let curStr = localStorage.getItem("ssa_current_user");
+    if(!curStr) return;
+    try{
+      let cur = JSON.parse(curStr);
+      if(cur.account_status!=="active"){
+        let result = await window.__SSA_fetchFreshOnLogin(cur.email, cur.id);
+        if(result && result.user && result.user.account_status==="active"){
+          let updated = {...cur, account_status:"active"};
+          localStorage.setItem("ssa_current_user", JSON.stringify(updated));
+          console.log("[Fix] Page load auto-fix - pending -> active");
+          if(document.body.innerText.toLowerCase().includes("pending") || document.body.innerText.toLowerCase().includes("authorization")){
+            location.reload();
+          }
+        }
+      }
+    }catch{}
+  })();
+
+  console.log("[Fix] Instant auth check installed");
+})();
+</script>
+
+
+<script>
+(function(){
+  console.log("[Wipe Guard] Installing guard to block old data re-sync");
+  const WIPE_KEYS = ["ssa_relationships","ssa_bookings","ssa_questions","ssa_submissions","ssa_question_submissions","ssa_classes","ssa_assignments"];
+  function getSupa(){
+    try{
+      if(window.supabaseClient) return window.supabaseClient;
+      if(window.__SSA_SUPABASE_CLIENT__) return window.__SSA_SUPABASE_CLIENT__;
+      let url = "https://ezxdjrowqvpkmbjjajgq.supabase.co";
+      let key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 131 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+      if(window.supabase && url && key) return window.supabase.createClient(url, key);
+    }catch(e){}
+    return null;
+  }
+
+  // Listen for wipe broadcasts
+  try{
+    let bc1 = new BroadcastChannel("ssa_sync");
+    bc1.onmessage = (e)=>{
+      if(e.data && (e.data.type==="wipe_all" || e.data.type==="wipe")){
+        console.log("[Wipe Guard] Wipe broadcast received, clearing local");
+        WIPE_KEYS.forEach(k=>{ try{ localStorage.removeItem(k); }catch{} });
+        try{ localStorage.setItem("ssa_last_wipe", JSON.stringify({wiped_at:new Date().toISOString(), ts:Date.now()})); }catch{}
+      }
+    };
+  }catch{}
+  try{
+    let bc2 = new BroadcastChannel("ssa_wipe");
+    bc2.onmessage = (e)=>{
+      console.log("[Wipe Guard] Wipe channel received");
+      WIPE_KEYS.forEach(k=>{ try{ localStorage.removeItem(k); }catch{} });
+    };
+  }catch{}
+
+  // On storage event for wipe
+  window.addEventListener('storage', (e)=>{
+    if(e.key==="ssa_wipe_event" || e.key==="ssa_last_wipe"){
+      console.log("[Wipe Guard] Storage wipe event, clearing local");
+      WIPE_KEYS.forEach(k=>{ try{ localStorage.removeItem(k); }catch{} });
+    }
+  });
+
+  // Check on load if wipe marker exists in cloud and is recent
+  (async ()=>{
+    await new Promise(r=>setTimeout(r, 2000));
+    let c=getSupa(); if(!c) return;
+    try{
+      let {data} = await c.from("ssa_store").select("data, updated_at").eq("key","ssa_last_wipe").single();
+      if(data && data.data && data.data.wiped_at){
+        let wipedAt = new Date(data.data.wiped_at).getTime();
+        let now = Date.now();
+        // If wiped within last 24h, clear local
+        if(now - wipedAt < 24*60*60*1000){
+          console.log("[Wipe Guard] Recent wipe found in cloud, clearing local storage");
+          WIPE_KEYS.forEach(k=>{ try{ localStorage.removeItem(k); }catch{} });
+          // Also clear from cloud if still has data (prevent restore)
+          for(let k of WIPE_KEYS){
+            try{
+              let {data: kd} = await c.from("ssa_store").select("data").eq("key",k).single();
+              if(kd && kd.data && kd.data.length>0){
+                console.log(`[Wipe Guard] Cloud ${k} still has ${kd.data.length} items, clearing again`);
+                await c.from("ssa_store").upsert({key:k, data:[], updated_at:new Date().toISOString()},{onConflict:"key"});
+              }
+            }catch{}
+          }
+        }
+      }
+    }catch(e){}
+  })();
+
+  // Guard the sync push: don't push old relationships if wipe happened recently
+  const originalSetItem = localStorage.setItem;
+  localStorage.setItem = function(key, value){
+    if(WIPE_KEYS.includes(key)){
+      try{
+        let wipeStr = localStorage.getItem("ssa_last_wipe");
+        if(wipeStr){
+          let wipe = JSON.parse(wipeStr);
+          let wipedAt = wipe.wiped_at ? new Date(wipe.wiped_at).getTime() : wipe.ts || 0;
+          if(Date.now() - wipedAt < 24*60*60*1000){
+            // If trying to set relationships after wipe, check if value is non-empty
+            let arr = [];
+            try{ arr = JSON.parse(value); }catch{}
+            if(arr.length>0){
+              console.warn(`[Wipe Guard] Blocking re-sync of ${key} with ${arr.length} items - wipe happened recently`);
+              // Allow empty, block non-empty
+              if(wipe && wipe.keys && wipe.keys.includes(key)){
+                // If this is a wipe marker itself, allow
+              } else {
+                // Block push - set empty instead
+                return originalSetItem.call(this, key, JSON.stringify([]));
+              }
+            }
+          }
+        }
+      }catch{}
+    }
+    return originalSetItem.call(this, key, value);
+  };
+
+  console.log("[Wipe Guard] Installed");
+})();
+</script>
+
 </body>
 </html>
