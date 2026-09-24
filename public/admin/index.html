@@ -422,5 +422,135 @@ if(!t)return y("div",{className:"min-h-screen bg-[#F6F8FC] flex items-center jus
 })();
 </script>
 
+
+<div id="ssa-school-delete-injected-style" style="display:none"></div>
+<style>
+#ssa-toast-container { position: fixed; bottom: 16px; right: 16px; left: 16px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.ssa-toast { background: #0F2355; color: white; padding: 12px 16px; border-radius: 12px; font-size: 13px; font-weight: 500; box-shadow: 0 10px 30px rgba(0,0,0,0.2); animation: ssa-slideIn 0.3s ease; pointer-events: auto; max-width: 420px; margin-left: auto; }
+.ssa-toast.error { background: #B42318; }
+.ssa-toast.success { background: #16A34A; }
+.ssa-toast.info { background: #0F2355; }
+@keyframes ssa-slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+</style>
+<div id="ssa-toast-container"></div>
+<script>
+(function(){
+  // Improved toast that auto-dismisses
+  window.SSA_Toast = function(msg, type='info'){
+    let c = document.getElementById('ssa-toast-container');
+    if(!c){ c = document.createElement('div'); c.id='ssa-toast-container'; document.body.appendChild(c); }
+    let t = document.createElement('div');
+    t.className = 'ssa-toast ' + type;
+    t.textContent = msg;
+    c.appendChild(t);
+    setTimeout(()=>{ t.style.opacity='0'; t.style.transform='translateY(10px)'; setTimeout(()=>t.remove(), 300); }, 3500);
+  };
+  // Override old toast if any
+  window.showToast = window.SSA_Toast;
+
+  function getUsers(){
+    try{ let s=localStorage.getItem("ssa_users"); if(s) return JSON.parse(s); }catch{} return [];
+  }
+  function getSchools(){
+    let users=getUsers();
+    let map=new Map();
+    users.forEach(u=>{
+      let name=(u.schoolName||"").trim();
+      if(!name) return;
+      if(!map.has(name)) map.set(name,{name:name, teachers:[], students:[], count:0});
+      let entry=map.get(name);
+      if(u.role==="teacher") entry.teachers.push(u);
+      else entry.students.push(u);
+      entry.count++;
+    });
+    return Array.from(map.values()).sort((a,b)=>b.count-a.count);
+  }
+  async function deleteSchool(schoolName){
+    let __school=schoolName.trim();
+    let users=getUsers();
+    let toDelete=users.filter(u=>u.schoolName&&u.schoolName.trim()===__school);
+    if(toDelete.length===0){ window.SSA_Toast("No users found for "+__school, 'error'); return; }
+    if(!confirm(`DELETE SCHOOL "${__school}"?\n\nThis will PERMANENTLY delete:\n- ${toDelete.filter(u=>u.role==="teacher").length} teachers\n- ${toDelete.filter(u=>u.role==="student").length} students\n- All their bookings, questions, relationships\n\nCannot be undone!`)) return;
+    window.SSA_Toast(`Deleting school ${__school} via backend...`, 'info');
+    try{
+      let supaUrl = (window.__SSA_ENV__||{}).SUPABASE_URL || window.SUPABASE_URL || "https://ezxdjrowqvpkmbjjajgq.supabase.co";
+      let supaAnon = (window.__SSA_ENV__||{}).SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || "";
+      // Try edge function delete-school if exists, else fallback to delete-user loop
+      let ids = toDelete.map(u=>u.id);
+      // Try bulk via delete-user function for each
+      for(let u of toDelete){
+        try{
+          let res = await fetch(`${supaUrl}/functions/v1/delete-user`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${supaAnon}`, 'apikey': supaAnon },
+            body: JSON.stringify({ targetUserId: u.id, targetEmail: u.email })
+          });
+          if(!res.ok){
+            let txt = await res.text();
+            console.warn("delete-user failed for", u.email, txt);
+          }
+        }catch(e){ console.warn("delete-user fetch failed", e); }
+      }
+      // Update local ssa_users after backend
+      try{
+        let c = window.supabaseClient||window.__SSA_SUPABASE_CLIENT__;
+        if(c){
+          let {data} = await c.from("ssa_store").select("data").eq("key","ssa_users").single();
+          let latest = data?.data || getUsers();
+          let filtered = latest.filter(u=>!(u.schoolName&&u.schoolName.trim()===__school));
+          localStorage.setItem("ssa_users", JSON.stringify(filtered));
+          await c.from("ssa_store").upsert({key:"ssa_users", data: filtered, updated_at: new Date().toISOString()}, {onConflict:"key"});
+        } else {
+          let filtered = getUsers().filter(u=>!(u.schoolName&&u.schoolName.trim()===__school));
+          localStorage.setItem("ssa_users", JSON.stringify(filtered));
+        }
+      }catch(e){
+        let filtered = getUsers().filter(u=>!(u.schoolName&&u.schoolName.trim()===__school));
+        localStorage.setItem("ssa_users", JSON.stringify(filtered));
+      }
+      window.SSA_Toast(`School "${__school}" deleted: ${toDelete.length} users removed`, 'success');
+      setTimeout(()=>location.reload(), 1200);
+    }catch(e){
+      console.error(e);
+      window.SSA_Toast("Failed to delete school: "+e.message, 'error');
+    }
+  }
+  function renderSchoolPanel(){
+    let schools=getSchools();
+    let container=document.getElementById("ssa-school-delete-panel");
+    if(!container){
+      let target=document.querySelector("main")||document.body;
+      container=document.createElement("div");
+      container.id="ssa-school-delete-panel";
+      container.style.cssText="margin:16px;padding:16px;background:#FFF1F0;border:1px solid #FECDCA;border-radius:16px;font-family:Inter,system-ui;position:relative;z-index:10;";
+      target.prepend(container);
+    }
+    if(schools.length===0){
+      container.innerHTML='<div style="font-size:13px;color:#6B7A99;">No schools found. Schools appear when teachers have schoolName.</div>';
+      return;
+    }
+    let html='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"><div style="font-size:14px;font-weight:700;color:#0F2355;">Delete School • Permanent • Via Edge Function /functions/v1/delete-user</div><div style="font-size:11px;color:#6B7A99;">Deletes teachers + students + data</div></div>';
+    html+='<div style="display:grid;gap:8px;">';
+    schools.forEach(s=>{
+      html+=`<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:white;border:1px solid #E8ECF4;border-radius:12px;">
+        <div><div style="font-size:13px;font-weight:600;color:#0F2355;">${s.name}</div><div style="font-size:11px;color:#6B7A99;">${s.teachers.length} teachers • ${s.students.length} students</div></div>
+        <button data-school="${s.name.replace(/"/g,'&quot;')}" class="ssa-del-school-btn" style="font-size:11px;font-weight:600;padding:6px 12px;border-radius:9999px;background:#FEF3F2;border:1px solid #FECDCA;color:#B42318;cursor:pointer;">Delete School</button>
+      </div>`;
+    });
+    html+='</div>';
+    container.innerHTML=html;
+    container.querySelectorAll(".ssa-del-school-btn").forEach(btn=>{
+      btn.onclick=()=>deleteSchool(btn.getAttribute("data-school"));
+    });
+  }
+  setInterval(()=>{
+    if(document.body.innerHTML.includes("Schools •")||localStorage.getItem("ssa_users")){
+      renderSchoolPanel();
+    }
+  },3000);
+  setTimeout(renderSchoolPanel, 2000);
+})();
+</script>
+
 </body>
 </html>
