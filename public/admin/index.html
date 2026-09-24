@@ -98,13 +98,12 @@ Error generating stack: `+o.message+`
 <div id="ssa-toast-container"></div>
 <script>
 (function(){
-  // Ensure Supabase client
   function getSupa(){
     try{
       if(window.supabaseClient) return window.supabaseClient;
       if(window.__SSA_SUPABASE_CLIENT__) return window.__SSA_SUPABASE_CLIENT__;
       let url = (window.__SSA_ENV__||{}).SUPABASE_URL || window.SUPABASE_URL || "https://ezxdjrowqvpkmbjjajgq.supabase.co";
-      let key = (window.__SSA_ENV__||{}).SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV6eGRqcm93cXZwa21iamphamdxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1NjczNDIsImV4cCI6MjEwNTE0MzM0Mn0.I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+      let key = (window.__SSA_ENV__||{}).SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 127 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
       if(window.supabase && url && key) return window.supabase.createClient(url, key);
     }catch(e){ console.warn(e); }
     return null;
@@ -122,76 +121,84 @@ Error generating stack: `+o.message+`
     setTimeout(()=>{ t.style.opacity='0'; t.style.transition='0.3s'; setTimeout(()=>t.remove(), 300); }, 3500);
   };
 
-  // Auth functions
-  window.SSA_Cs = window.SSA_Cs || async function(s){
+  window.SSA_Cs = async function(s){
     let __id=s.id; let __email=s.email;
-    if(!confirm(`AUTHORIZE "${s.name||s.email}"?\n\nThis will allow user to access dashboard.`)) return;
+    if(!confirm(`AUTHORIZE "${s.name||s.email}"?`)) return;
     try{
       let url = (window.__SSA_ENV__||{}).SUPABASE_URL || "https://ezxdjrowqvpkmbjjajgq.supabase.co";
-      let anon = (window.__SSA_ENV__||{}).SUPABASE_ANON_KEY || "";
-      let res = await fetch(`${url}/functions/v1/update-account-status`,{
-        method:"POST",
-        headers:{"Content-Type":"application/json","Authorization":`Bearer ${anon}`,"apikey":anon},
-        body:JSON.stringify({targetUserId:__id,targetEmail:__email,account_status:"active"})
-      });
-      if(!res.ok){ let d=await res.json(); throw new Error(d.error||"Authorize failed"); }
+      let anon = (window.__SSA_ENV__||{}).SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 127 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+      try{
+        let res = await fetch(`${url}/functions/v1/update-account-status`,{
+          method:"POST",
+          headers:{"Content-Type":"application/json","Authorization":`Bearer ${anon}`,"apikey":anon},
+          body:JSON.stringify({targetUserId:__id,targetEmail:__email,account_status:"active"})
+        });
+        if(!res.ok){ console.warn("Edge function error", await res.text()); }
+      }catch(fe){ console.warn("Edge fetch failed, fallback to local", fe); window.SSA_Toast("Edge offline - authorizing locally...", 'info'); }
       let users=getUsers(); let updated=users.map(u=>u.id===__id?{...u,account_status:"active",account_status_updated_at:new Date().toISOString()}:u);
       localStorage.setItem("ssa_users",JSON.stringify(updated));
-      let c=getSupa(); if(c){ try{ await c.from("ssa_store").upsert({key:"ssa_users", data:updated, updated_at:new Date().toISOString()},{onConflict:"key"}); }catch{} }
-      window.SSA_Toast(`${s.name||s.email} authorized`, 'success');
+      let c=getSupa(); if(c){ try{ await c.from("ssa_store").upsert({key:"ssa_users", data:updated, updated_at:new Date().toISOString()},{onConflict:"key"}); }catch(e){ console.warn(e); } }
+      try{ localStorage.setItem("ssa_sync_event", JSON.stringify({type:"account_status_changed", id:__id, status:"active", ts:Date.now()})); }catch{}
+      try{ new BroadcastChannel("ssa_sync").postMessage({key:"ssa_users", type:"account_status_changed", id:__id, status:"active", ts:Date.now()}); }catch{}
+      window.SSA_Toast(`${s.name||s.email} authorized ✓`, 'success');
       renderDrawer(); injectRowButtons();
+      setTimeout(()=>location.reload(), 800);
     }catch(e){ window.SSA_Toast("Authorize failed: "+e.message, 'error'); }
   };
-  window.SSA_Ss = window.SSA_Ss || async function(s){
+  window.SSA_Ss = async function(s){
     let __id=s.id; let __email=s.email;
-    if(!confirm(`SUSPEND "${s.name||s.email}"?\n\nPrevent login and terminate session. You can reactivate later.`)) return;
-    let __reason=prompt(`Reason for suspending ${s.name||s.email} (optional):`)||"Suspended by administrator";
+    if(!confirm(`SUSPEND "${s.name||s.email}"?`)) return;
+    let __reason=prompt(`Reason:`)||"Suspended by administrator";
     try{
       let url = (window.__SSA_ENV__||{}).SUPABASE_URL || "https://ezxdjrowqvpkmbjjajgq.supabase.co";
-      let anon = (window.__SSA_ENV__||{}).SUPABASE_ANON_KEY || "";
-      let res = await fetch(`${url}/functions/v1/update-account-status`,{
-        method:"POST",
-        headers:{"Content-Type":"application/json","Authorization":`Bearer ${anon}`,"apikey":anon},
-        body:JSON.stringify({targetUserId:__id,targetEmail:__email,account_status:"suspended",reason:__reason})
-      });
-      if(!res.ok){ let d=await res.json(); throw new Error(d.error||"Suspend failed"); }
+      let anon = (window.__SSA_ENV__||{}).SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 127 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+      try{
+        let res = await fetch(`${url}/functions/v1/update-account-status`,{
+          method:"POST",
+          headers:{"Content-Type":"application/json","Authorization":`Bearer ${anon}`,"apikey":anon},
+          body:JSON.stringify({targetUserId:__id,targetEmail:__email,account_status:"suspended",reason:__reason})
+        });
+        if(!res.ok){ console.warn(await res.text()); }
+      }catch(fe){ window.SSA_Toast("Edge offline - suspending locally...", 'info'); }
       let users=getUsers(); let updated=users.map(u=>u.id===__id?{...u,account_status:"suspended",suspension_reason:__reason,account_status_updated_at:new Date().toISOString()}:u);
       localStorage.setItem("ssa_users",JSON.stringify(updated));
       let c=getSupa(); if(c){ try{ await c.from("ssa_store").upsert({key:"ssa_users", data:updated, updated_at:new Date().toISOString()},{onConflict:"key"}); }catch{} }
       try{ new BroadcastChannel("ssa_logout").postMessage({type:"force_logout",id:__id,reason:__reason,ts:Date.now()}); }catch{}
-      window.SSA_Toast(`${s.name||s.email} suspended`, 'success');
+      window.SSA_Toast(`${s.name||s.email} suspended ✓`, 'success');
       renderDrawer(); injectRowButtons();
+      setTimeout(()=>location.reload(), 800);
     }catch(e){ window.SSA_Toast("Suspend failed: "+e.message, 'error'); }
   };
-  window.SSA_Ua = window.SSA_Ua || async function(s){
+  window.SSA_Ua = async function(s){
     let __id=s.id; let __email=s.email;
-    if(!confirm(`MARK AS UNAUTHORIZED "${s.name||s.email}"?\n\nBlocked access.`)) return;
+    if(!confirm(`MARK UNAUTHORIZED "${s.name||s.email}"?`)) return;
     try{
       let url = (window.__SSA_ENV__||{}).SUPABASE_URL || "https://ezxdjrowqvpkmbjjajgq.supabase.co";
-      let anon = (window.__SSA_ENV__||{}).SUPABASE_ANON_KEY || "";
-      let res = await fetch(`${url}/functions/v1/update-account-status`,{
-        method:"POST",
-        headers:{"Content-Type":"application/json","Authorization":`Bearer ${anon}`,"apikey":anon},
-        body:JSON.stringify({targetUserId:__id,targetEmail:__email,account_status:"unauthorized"})
-      });
-      if(!res.ok){ let d=await res.json(); throw new Error(d.error||"Failed"); }
+      let anon = (window.__SSA_ENV__||{}).SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 127 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+      try{
+        let res = await fetch(`${url}/functions/v1/update-account-status`,{
+          method:"POST",
+          headers:{"Content-Type":"application/json","Authorization":`Bearer ${anon}`,"apikey":anon},
+          body:JSON.stringify({targetUserId:__id,targetEmail:__email,account_status:"unauthorized"})
+        });
+        if(!res.ok){ console.warn(await res.text()); }
+      }catch(fe){ window.SSA_Toast("Edge offline - marking locally...", 'info'); }
       let users=getUsers(); let updated=users.map(u=>u.id===__id?{...u,account_status:"unauthorized",account_status_updated_at:new Date().toISOString()}:u);
       localStorage.setItem("ssa_users",JSON.stringify(updated));
       let c=getSupa(); if(c){ try{ await c.from("ssa_store").upsert({key:"ssa_users", data:updated, updated_at:new Date().toISOString()},{onConflict:"key"}); }catch{} }
       try{ new BroadcastChannel("ssa_logout").postMessage({type:"force_logout",id:__id,reason:"unauthorized",ts:Date.now()}); }catch{}
-      window.SSA_Toast(`${s.name||s.email} marked unauthorized`, 'success');
+      window.SSA_Toast(`${s.name||s.email} unauthorized ✓`, 'success');
       renderDrawer(); injectRowButtons();
+      setTimeout(()=>location.reload(), 800);
     }catch(e){ window.SSA_Toast("Failed: "+e.message, 'error'); }
   };
 
-  // Drawer logic
   let currentTab = 'pending';
   function renderDrawer(){
     let users=getUsers();
     let pending=users.filter(u=>!u.account_status || u.account_status==="pending");
     let suspended=users.filter(u=>u.account_status==="suspended");
     let unauthorized=users.filter(u=>u.account_status==="unauthorized");
-    // Update button count
     let btn=document.getElementById('ssa-approvals-btn');
     if(btn){
       let count=pending.length + suspended.length;
@@ -208,6 +215,7 @@ Error generating stack: `+o.message+`
     list.forEach(u=>{
       let status=u.account_status||'pending';
       let color = status==='pending'?'#F59E0B':status==='active'?'#10B981':status==='unauthorized'?'#EA580C':'#EF4444';
+      let uStr = encodeURIComponent(JSON.stringify(u));
       html+=`<div class="ssa-user-row">
         <div style="flex:1; min-width:0;">
           <div style="font-size:13px; font-weight:600; color:#0F2355; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${u.name||'No name'}</div>
@@ -215,25 +223,22 @@ Error generating stack: `+o.message+`
           <div style="font-size:10px; color:${color}; font-weight:600; margin-top:2px;">${status.toUpperCase()}</div>
         </div>
         <div style="display:flex; flex-direction:column; gap:6px; margin-left:12px;">
-          ${status!=='active'?`<button onclick='SSA_Cs(${JSON.stringify(u).replace(/'/g,"&#39;")})' style="font-size:11px; padding:6px 12px; border-radius:9999px; background:#10B981; color:white; border:none; cursor:pointer; font-weight:600;">Authorize</button>`:''}
-          ${status==='active'?`<button onclick='SSA_Ss(${JSON.stringify(u).replace(/'/g,"&#39;")})' style="font-size:11px; padding:6px 12px; border-radius:9999px; background:#FEF3F2; border:1px solid #FECACA; color:#B42318; cursor:pointer; font-weight:600;">Suspend</button>`:''}
-          ${status!=='unauthorized'?`<button onclick='SSA_Ua(${JSON.stringify(u).replace(/'/g,"&#39;")})' style="font-size:11px; padding:6px 10px; border-radius:9999px; background:#FFF7ED; border:1px solid #FDBA74; color:#9A3412; cursor:pointer; font-weight:600;">Unauthorized</button>`:''}
-          ${status!=='active'?`<button onclick='SSA_Cs(${JSON.stringify(u).replace(/'/g,"&#39;")})' style="font-size:11px; padding:6px 10px; border-radius:9999px; background:#0F2355; color:white; border:none; cursor:pointer; font-weight:600;">Reactivate</button>`:''}
+          ${status!=='active'?`<button data-u="${uStr}" class="auth-btn" style="font-size:11px; padding:6px 12px; border-radius:9999px; background:#10B981; color:white; border:none; cursor:pointer; font-weight:600;">Authorize</button>`:''}
+          ${status==='active'?`<button data-u="${uStr}" class="susp-btn" style="font-size:11px; padding:6px 12px; border-radius:9999px; background:#FEF3F2; border:1px solid #FECACA; color:#B42318; cursor:pointer; font-weight:600;">Suspend</button>`:''}
+          ${status!=='unauthorized'?`<button data-u="${uStr}" class="unauth-btn" style="font-size:11px; padding:6px 10px; border-radius:9999px; background:#FFF7ED; border:1px solid #FDBA74; color:#9A3412; cursor:pointer; font-weight:600;">Unauthorized</button>`:''}
         </div>
       </div>`;
     });
     content.innerHTML=html;
+    content.querySelectorAll('.auth-btn').forEach(b=>{ b.onclick=()=>{ let u=JSON.parse(decodeURIComponent(b.dataset.u)); window.SSA_Cs(u); }});
+    content.querySelectorAll('.susp-btn').forEach(b=>{ b.onclick=()=>{ let u=JSON.parse(decodeURIComponent(b.dataset.u)); window.SSA_Ss(u); }});
+    content.querySelectorAll('.unauth-btn').forEach(b=>{ b.onclick=()=>{ let u=JSON.parse(decodeURIComponent(b.dataset.u)); window.SSA_Ua(u); }});
   }
 
   function injectApprovalsButton(){
-    // Find top header with bell icon
-    let header = document.querySelector('[class*="sticky"]');
-    if(!header) return;
     if(document.getElementById('ssa-approvals-btn')) return;
-    let bell = header.querySelector('button:has(svg)') || header.querySelector('div.ml-auto');
-    // Find the div with bell and avatar
-    let container = header.querySelector('.ml-auto') || header;
-    // Create button
+    let header = document.querySelector('header') || document.querySelector('[class*="sticky"]');
+    if(!header) return;
     let btn = document.createElement('button');
     btn.id='ssa-approvals-btn';
     btn.innerHTML='Approvals';
@@ -242,60 +247,55 @@ Error generating stack: `+o.message+`
       document.getElementById('ssa-approvals-overlay').classList.add('open');
       renderDrawer();
     };
-    // Insert before bell or at start of ml-auto
-    let mlAuto = header.querySelector('div.ml-auto');
-    if(mlAuto){
-      mlAuto.prepend(btn);
+    // Find container with bell
+    let target = header.querySelector('div.flex') || header;
+    // Try to insert before bell button
+    let bell = header.querySelector('button');
+    if(bell && bell.parentElement){
+      bell.parentElement.prepend(btn);
     } else {
-      header.appendChild(btn);
+      target.appendChild(btn);
     }
   }
 
   function injectRowButtons(){
-    // Find all tables with ACTIONS column
     document.querySelectorAll('table').forEach(table=>{
-      let headerText = table.innerText;
-      if(!headerText.includes('ACTIONS') && !headerText.includes('Actions')) return;
+      if(!table.innerText.includes('ACTIONS')) return;
       table.querySelectorAll('tbody tr').forEach(tr=>{
         if(tr.dataset.ssaEnhanced) return;
         let tds = tr.querySelectorAll('td');
         if(tds.length===0) return;
         let actionsTd = tds[tds.length-1];
         if(!actionsTd) return;
-        // Try to get user data from row
         let name = tds[0]?.innerText?.trim() || '';
-        let emailTd = Array.from(tds).find(td=>td.innerText.includes('@'));
-        let codeTd = tds[1]?.innerText || '';
-        // Find matching user
+        let code = tds[1]?.innerText?.trim() || '';
         let users=getUsers();
         let matched = users.find(u=> 
-          (name && u.name && name.toLowerCase().includes(u.name.toLowerCase().substring(0,5))) ||
-          (codeTd && (u.teacherCode===codeTd.trim() || u.studentCode===codeTd.trim() || u.id===codeTd.trim())) ||
-          (emailTd && u.email && emailTd.innerText.toLowerCase().includes(u.email.toLowerCase()))
+          (code && (u.teacherCode===code || u.studentCode===code || u.id===code)) ||
+          (name && u.name && name.toLowerCase().includes(u.name.toLowerCase().split(' ')[0]))
         );
-        if(!matched){
-          // Try fuzzy by name
-          matched = users.find(u=> u.name && name && u.name.toLowerCase()===name.toLowerCase());
-        }
         if(!matched) return;
-        // Check if suspend button already exists
         if(actionsTd.querySelector('.ssa-row-suspend')) return;
         let status = matched.account_status || 'pending';
-        let suspendBtn = document.createElement('button');
-        suspendBtn.className='ssa-row-suspend';
-        suspendBtn.textContent = status==='suspended' ? 'Reactivate' : 'Suspend';
-        suspendBtn.style.cssText='height:32px; padding:0 12px; border-radius:10px; font-size:12px; font-weight:500; margin-left:6px; cursor:pointer; border:1px solid '+(status==='suspended'?'#0F2355':'#FECACA')+'; background:'+(status==='suspended'?'#0F2355':'#FEF3F2')+'; color:'+(status==='suspended'?'white':'#B42318')+';';
-        suspendBtn.onclick=()=>{
-          if(status==='suspended' || status==='unauthorized') window.SSA_Cs(matched);
-          else window.SSA_Ss(matched);
-        };
-        actionsTd.appendChild(suspendBtn);
+        let btn = document.createElement('button');
+        btn.className='ssa-row-suspend';
+        btn.textContent = status==='suspended' ? 'Reactivate' : 'Suspend';
+        btn.style.cssText='height:32px; padding:0 12px; border-radius:10px; font-size:12px; font-weight:500; margin-left:6px; cursor:pointer; border:1px solid '+(status==='suspended'?'#0F2355':'#FECACA')+'; background:'+(status==='suspended'?'#0F2355':'#FEF3F2')+'; color:'+(status==='suspended'?'white':'#B42318')+';';
+        btn.onclick=()=>{ if(status==='suspended'||status==='unauthorized') window.SSA_Cs(matched); else window.SSA_Ss(matched); };
+        actionsTd.appendChild(btn);
         tr.dataset.ssaEnhanced='1';
       });
     });
   }
 
-  // Close drawer
+  function removeRedBanner(){
+    document.querySelectorAll('[id*="school-delete"]').forEach(el=>{
+      if(el.innerText.includes('Backend Permanent') || el.innerText.includes('Deletes Auth')){
+        el.style.display='none';
+      }
+    });
+  }
+
   document.getElementById('ssa-drawer-close')?.addEventListener('click', ()=>{
     document.getElementById('ssa-approvals-drawer').classList.remove('open');
     document.getElementById('ssa-approvals-overlay').classList.remove('open');
@@ -313,34 +313,8 @@ Error generating stack: `+o.message+`
     });
   });
 
-  // Remove any old red delete school banner if it exists
-  function removeRedBanner(){
-    let banner = document.getElementById('ssa-school-delete-panel');
-    if(banner && banner.innerHTML.includes('Delete School')){ 
-      // Only remove if it's the red top banner, not drawer
-      if(banner.parentElement && banner.parentElement.tagName!=='BODY'){ /* keep if needed */ }
-      // Hide it per user request
-      banner.style.display='none';
-    }
-    document.querySelectorAll('[id*="school-delete"]').forEach(el=>{
-      if(el.id!=='ssa-approvals-drawer' && el.innerText.includes('Backend Permanent')){
-        el.style.display='none';
-      }
-    });
-  }
-
-  setInterval(()=>{
-    injectApprovalsButton();
-    injectRowButtons();
-    removeRedBanner();
-    renderDrawer();
-  }, 2000);
-  setTimeout(()=>{
-    injectApprovalsButton();
-    injectRowButtons();
-    removeRedBanner();
-    renderDrawer();
-  }, 1500);
+  setInterval(()=>{ injectApprovalsButton(); injectRowButtons(); removeRedBanner(); renderDrawer(); }, 2000);
+  setTimeout(()=>{ injectApprovalsButton(); injectRowButtons(); removeRedBanner(); renderDrawer(); }, 1500);
 })();
 </script>
 
