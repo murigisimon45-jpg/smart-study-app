@@ -265,5 +265,38 @@ Error generating stack: `+o.message+`
 })();
 </script>
 
+
+<script>
+(function(){
+  // Enhance authorize to send notification to user for auto-login trigger
+  const originalSSA_Cs = window.SSA_Cs;
+  window.SSA_Cs = async function(s){
+    // Call original
+    if(originalSSA_Cs) await originalSSA_Cs(s);
+    // Also send notification and trigger realtime
+    try{
+      let url="https://ezxdjrowqvpkmbjjajgq.supabase.co"; 
+      let anon="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.[STRIPPED 131 bytes].I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+      // Fetch supabase client
+      let c=null;
+      try{ if(window.supabaseClient) c=window.supabaseClient; else if(window.__SSA_SUPABASE_CLIENT__) c=window.__SSA_SUPABASE_CLIENT__; else if(window.supabase) c=window.supabase.createClient(url, anon); }catch{}
+      if(c){
+        // Add notification for user
+        try{
+          let {data} = await c.from("ssa_store").select("data").eq("key","ssa_notifications").single();
+          let notifs=data?.data||[];
+          notifs.push({id:`notif_${Date.now()}`, userId:s.id, type:"approved", message:"Your account has been approved by admin! You can now login.", read:false, createdAt:new Date().toISOString()});
+          await c.from("ssa_store").upsert({key:"ssa_notifications", data:notifs, updated_at:new Date().toISOString()},{onConflict:"key"});
+        }catch{}
+        // Trigger a dummy update to ssa_store to fire realtime (update a timestamp key)
+        try{
+          await c.from("ssa_store").upsert({key:"ssa_last_auth_change", data:{userId:s.id, email:s.email, status:"active", ts:Date.now()}, updated_at:new Date().toISOString()},{onConflict:"key"});
+        }catch{}
+      }
+    }catch(e){ console.warn("Post-authorize notify failed", e); }
+  };
+})();
+</script>
+
 </body>
 </html>
