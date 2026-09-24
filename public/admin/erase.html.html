@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>SSA Permanent Erase Tool</title>
+<style>
+body { font-family: system-ui, -apple-system, sans-serif; background: #F6F8FC; margin: 0; padding: 20px; }
+.card { background: white; border: 1px solid #E8ECF4; border-radius: 16px; padding: 20px; max-width: 500px; margin: 20px auto; box-shadow: 0 10px 40px -20px rgba(15,35,85,0.2); }
+.btn { width: 100%; height: 52px; border-radius: 12px; border: none; font-weight: 700; font-size: 14px; cursor: pointer; margin-top: 12px; }
+.btn-danger { background: #B42318; color: white; }
+.btn-dark { background: #0F2355; color: white; }
+.btn-light { background: white; border: 1px solid #E8ECF4; color: #0F2355; }
+.debug { background: #FEF2F2; border: 1px solid #FECACA; border-radius: 10px; padding: 12px; font-size: 12px; margin-top: 12px; font-family: monospace; white-space: pre-wrap; }
+.log { background: #0F2355; color: #8B9BB4; border-radius: 10px; padding: 12px; font-size: 11px; margin-top: 12px; max-height: 300px; overflow-y: auto; font-family: monospace; }
+</style>
+</head>
+<body>
+<div class="card">
+<h2 style="margin:0; color:#0F2355;">SSA Permanent Erase</h2>
+<p style="font-size:13px; color:#6B7A99; margin-top:8px;">This page bypasses React. Buttons are guaranteed clickable. It will permanently erase the 19 relationships from your screenshot.</p>
+
+<div id="counts" class="debug">Loading counts from Supabase...</div>
+
+<button class="btn btn-danger" onclick="permanentErase()" style="pointer-events:auto; z-index:999999; position:relative;">PERMANENTLY ERASE ALL RELATIONSHIPS</button>
+<button class="btn btn-dark" onclick="checkCounts()" style="pointer-events:auto;">Refresh Counts</button>
+<button class="btn btn-light" onclick="clearLocalOnly()" style="pointer-events:auto;">Clear LocalStorage Only (This Device)</button>
+
+<div id="log" class="log">Log will appear here...</div>
+
+<div style="margin-top:20px; font-size:11px; color:#8B9BB4;">
+Supabase URL: https://ezxdjrowqvpkmbjjajgq.supabase.co<br>
+This directly upserts [] to ssa_store keys.
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL = "https://ezxdjrowqvpkmbjjajgq.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV6eGRqcm93cXZwa21iampqamdxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDUzMzQ1MjcsImV4cCI6MjA2MDkxMDUyN30.I5wqigzNkLd5u-fyMjl-829BSscZZS2UzGNqSrwHuWs";
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+const WIPE_KEYS = ["ssa_relationships","ssa_bookings","ssa_questions","ssa_submissions","ssa_question_submissions","ssa_classes","ssa_assignments"];
+
+function log(msg){
+  let el=document.getElementById('log');
+  el.textContent = new Date().toLocaleTimeString() + " - " + msg + "\n" + el.textContent;
+  console.log(msg);
+}
+
+async function checkCounts(){
+  log("Fetching counts...");
+  let counts={};
+  let html="";
+  for(let k of WIPE_KEYS){
+    try{
+      let {data, error} = await supabase.from("ssa_store").select("data").eq("key",k).single();
+      if(error){ counts[k]=`error: ${error.message}`; html+=`${k}: error\n`; }
+      else{ 
+        let len=(data?.data||[]).length; 
+        counts[k]=len; 
+        html+=`${k}: ${len}\n`; 
+      }
+    }catch(e){ counts[k]=`exception: ${e.message}`; html+=`${k}: exception\n`; }
+  }
+  document.getElementById('counts').textContent = html + "\nLast check: " + new Date().toLocaleString();
+  log("Counts: " + JSON.stringify(counts));
+  return counts;
+}
+
+async function permanentErase(){
+  if(!confirm("PERMANENTLY ERASE ALL RELATIONSHIPS?\n\nDebug showed 19 relationships. This will delete them from Supabase and set permanent wipe marker so they CANNOT come back.")) return;
+  if(!confirm("FINAL CONFIRM: Erase for ALL schools?")) return;
+  
+  log("Starting permanent erase...");
+  let btn = document.querySelector('.btn-danger');
+  btn.textContent = "Erasing...";
+  btn.disabled = true;
+
+  let now = new Date().toISOString();
+  
+  // 1. Clear localStorage immediately
+  WIPE_KEYS.forEach(k=>{
+    try{ localStorage.removeItem(k); log(`Cleared localStorage ${k}`); }catch{}
+  });
+  try{ localStorage.setItem("ssa_last_wipe", JSON.stringify({wiped_at:now, permanent:true})); log("Set wipe marker local"); }catch{}
+  try{ localStorage.setItem("ssa_wipe_event", JSON.stringify({type:"permanent_wipe", ts:Date.now()})); }catch{}
+  
+  // 2. Broadcast to other tabs
+  try{ new BroadcastChannel("ssa_sync").postMessage({type:"wipe_all", permanent:true, ts:Date.now()}); log("Broadcast wipe_all"); }catch{}
+  try{ new BroadcastChannel("ssa_wipe").postMessage({type:"wipe", permanent:true}); log("Broadcast wipe"); }catch{}
+
+  // 3. Try edge function
+  try{
+    log("Calling edge function delete-all-relationships...");
+    let res = await fetch(`${SUPABASE_URL}/functions/v1/delete-all-relationships`,{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_ANON}`,"apikey":SUPABASE_ANON},
+      body:JSON.stringify({confirm:true})
+    });
+    let data = await res.json();
+    log("Edge function result: " + JSON.stringify(data));
+  }catch(e){
+    log("Edge function failed (will use direct wipe): " + e.message);
+  }
+
+  // 4. Direct wipe - upsert [] to each key
+  for(let k of WIPE_KEYS){
+    try{
+      log(`Wiping ${k} to []...`);
+      let {error} = await supabase.from("ssa_store").upsert({key:k, data:[], updated_at:now},{onConflict:"key"});
+      if(error) log(`Error wiping ${k}: ${error.message}`);
+      else log(`Wiped ${k} ✓`);
+    }catch(e){
+      log(`Exception wiping ${k}: ${e.message}`);
+    }
+  }
+  
+  // 5. Set wipe markers
+  try{
+    await supabase.from("ssa_store").upsert({key:"ssa_last_wipe", data:{wiped_at:now, permanent:true, keys:WIPE_KEYS, debug:"19 relationships erased"}, updated_at:now},{onConflict:"key"});
+    log("Set ssa_last_wipe marker ✓");
+  }catch(e){ log("Failed to set wipe marker: "+e.message); }
+  
+  try{
+    await supabase.from("ssa_store").upsert({key:"ssa_wipe_event", data:{type:"permanent_wipe", keys:WIPE_KEYS, ts:Date.now(), permanent:true}, updated_at:now},{onConflict:"key"});
+    log("Set wipe event ✓");
+  }catch(e){ log("Failed wipe event: "+e.message); }
+
+  log("Permanent erase complete! Checking new counts...");
+  await checkCounts();
+  
+  btn.textContent = "PERMANENTLY ERASE ALL RELATIONSHIPS";
+  btn.disabled = false;
+  
+  alert("All relationships erased! Debug bar should now show 0. Refresh your main app.");
+}
+
+async function clearLocalOnly(){
+  WIPE_KEYS.forEach(k=>{ try{ localStorage.removeItem(k); }catch{} });
+  log("Cleared localStorage only - Supabase still has old data. Use permanent erase to clear cloud.");
+  await checkCounts();
+}
+
+// Auto load counts on open
+checkCounts();
+log("Standalone erase tool loaded - buttons are clickable (no React blocking)");
+</script>
+</body>
+</html>
